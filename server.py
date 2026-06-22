@@ -17,14 +17,16 @@ import numpy as np
 import torch
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 
 from cohere_wyoming.audio import is_effectively_silent, read_audio_to_numpy
+from cohere_wyoming.enrollment import EnrollmentError, EnrollmentStore
 from cohere_wyoming.transcriber import (
     CohereTranscriber,
     LANGUAGE_ALIASES,
     SUPPORTED_LANGUAGES,
 )
+from cohere_wyoming.speaker_id import SpeakerRegistry
 from cohere_wyoming.vad import VadConfig
 
 
@@ -35,7 +37,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("cohere-transcribe-server")
 
-service = CohereTranscriber(vad_config=VadConfig.from_env())
+service = CohereTranscriber(
+    vad_config=VadConfig.from_env(),
+    speaker_registry=SpeakerRegistry.from_env(),
+)
 INDEX_TEMPLATE_PATH = Path(__file__).resolve().parent / "cohere_wyoming" / "templates" / "index.html"
 IGNORED_WHISPER_PARAMS = ("temperature_inc", "prompt", "encode", "no_timestamps")
 
@@ -124,8 +129,21 @@ def log_ignored_whisper_options(
         )
 
 
-def build_segments(text: str, duration: float) -> list[dict]:
-    return [{"id": 0, "start": 0.0, "end": duration, "text": text}]
+def build_segments(result: dict) -> list[dict]:
+    """Expose diarized speaker segments; fall back to one whole-utterance segment."""
+    segments = result.get("segments") or []
+    if segments:
+        return [
+            {
+                "id": index,
+                "speaker": segment.get("speaker"),
+                "start": segment.get("start", 0.0),
+                "end": segment.get("end", result["duration"]),
+                "text": segment.get("text", ""),
+            }
+            for index, segment in enumerate(segments)
+        ]
+    return [{"id": 0, "start": 0.0, "end": result["duration"], "text": result["text"]}]
 
 
 def format_timestamp(duration: float, *, srt: bool) -> str:
@@ -163,7 +181,7 @@ def format_whisper_response(response_format: str, result: dict):
                 "language": result["language"],
                 "duration": duration,
                 "text": text,
-                "segments": build_segments(text, duration),
+                "segments": build_segments(result),
             }
         )
     return JSONResponse({"text": text})
@@ -180,7 +198,7 @@ def format_openai_response(response_format: str, result: dict):
                 "language": result["language"],
                 "duration": result["duration"],
                 "text": text,
-                "segments": build_segments(text, result["duration"]),
+                "segments": build_segments(result),
             }
         )
     return JSONResponse({"text": text})
@@ -220,8 +238,11 @@ def render_compatibility_notes() -> str:
             "<code>no_timestamps</code>"
         ),
         (
-            "<strong>Not supported:</strong> translation, auto language detection, "
-            "native per-segment timestamps"
+            "<strong>Diarization:</strong> per-speaker segments with timestamps "
+            "(<code>verbose_json</code>); transcript text is prefixed per speaker"
+        ),
+        (
+            "<strong>Not supported:</strong> translation, auto language detection"
         ),
     ]
     return "".join(f"<li>{note}</li>" for note in notes)
@@ -294,7 +315,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Cohere Transcribe Server",
-    description="whisper.cpp-compatible API powered by CohereLabs/cohere-transcribe-03-2026",
+    description="whisper.cpp-compatible API powered by syvai/cohere-transcribe-diarize",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -374,18 +395,84 @@ async def load(model_path: Optional[str] = Form(None, alias="model")):
         raise HTTPException(status_code=500, detail=f"Failed to load model: {err}") from err
 
 
+def enrollment_store() -> EnrollmentStore:
+    return EnrollmentStore(service.speaker_registry.enrollment_dir)
+
+
+@app.get("/speakers")
+async def list_speakers():
+    return JSONResponse(
+        {
+            "speakers": enrollment_store().list_speakers(),
+            "speaker_id": service.speaker_registry.status_payload(),
+        }
+    )
+
+
+@app.post("/speakers")
+async def create_speaker(name: str = Form(...)):
+    try:
+        created = enrollment_store().create_speaker(name)
+    except EnrollmentError as err:
+        raise HTTPException(status_code=400, detail=str(err)) from err
+    return JSONResponse({"status": "ok", "name": created})
+
+
+@app.delete("/speakers/{name}")
+async def delete_speaker(name: str):
+    try:
+        enrollment_store().delete_speaker(name)
+    except EnrollmentError as err:
+        raise HTTPException(status_code=404, detail=str(err)) from err
+    return JSONResponse({"status": "ok"})
+
+
+@app.post("/speakers/{name}/samples")
+async def add_speaker_sample(name: str, file: UploadFile = File(...)):
+    data = await file.read()
+    try:
+        sample = enrollment_store().add_sample(name, data, file.filename or "audio")
+    except EnrollmentError as err:
+        raise HTTPException(status_code=400, detail=str(err)) from err
+    return JSONResponse({"status": "ok", "sample": sample})
+
+
+@app.get("/speakers/{name}/samples/{sample_id}")
+async def get_speaker_sample(name: str, sample_id: str):
+    try:
+        path = enrollment_store().sample_path(name, sample_id)
+    except EnrollmentError as err:
+        raise HTTPException(status_code=404, detail=str(err)) from err
+    return FileResponse(str(path), media_type="audio/wav", filename=sample_id)
+
+
+@app.delete("/speakers/{name}/samples/{sample_id}")
+async def delete_speaker_sample(name: str, sample_id: str):
+    try:
+        enrollment_store().delete_sample(name, sample_id)
+    except EnrollmentError as err:
+        raise HTTPException(status_code=404, detail=str(err)) from err
+    return JSONResponse({"status": "ok"})
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Cohere Transcribe Server - whisper.cpp compatible API",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Hostname/IP address for the server")
-    parser.add_argument("--port", type=int, default=8080, help="Port number for the server")
+    parser.add_argument("--port", type=int, default=8580, help="Port number for the server")
+    parser.add_argument(
+        "--no-load-model",
+        action="store_true",
+        default=False,
+        help="Skip loading the ASR model (serve the enrollment UI / API only)",
+    )
     parser.add_argument(
         "-m",
         "--model",
         type=str,
-        default="CohereLabs/cohere-transcribe-03-2026",
+        default="syvai/cohere-transcribe-diarize",
         help="HuggingFace model ID or local path",
     )
     parser.add_argument(
@@ -448,7 +535,10 @@ def main():
     print(f"  Threads:  {args.threads}")
     print(f"  GPU:      {'disabled' if args.no_gpu else 'auto'}")
 
-    load_model(args.model)
+    if args.no_load_model:
+        logger.info("Skipping ASR model load (enrollment UI / API only mode)")
+    else:
+        load_model(args.model)
 
     logger.info("Starting server on %s:%s", args.host, args.port)
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")

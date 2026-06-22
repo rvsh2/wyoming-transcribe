@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import io
+import os
 import subprocess
+import tempfile
 
 import librosa
 import numpy as np
@@ -43,16 +45,23 @@ def read_audio_to_numpy(file_bytes: bytes, filename: str = "audio") -> tuple[np.
     except Exception:
         pass
 
+    librosa_error: Exception | None = None
     try:
         audio_io = io.BytesIO(file_bytes)
         audio_data, sample_rate = librosa.load(
             audio_io, sr=TARGET_SAMPLE_RATE, mono=True
         )
         return np.asarray(audio_data, dtype=np.float32), sample_rate
-    except Exception as librosa_error:
-        pass
+    except Exception as error:
+        librosa_error = error
 
+    # Decode via a temp file so ffmpeg can seek (required for m4a/mp4 moov atoms,
+    # which fail when piped through stdin).
+    tmp_path = None
     try:
+        with tempfile.NamedTemporaryFile(suffix=os.path.splitext(filename)[1] or ".bin", delete=False) as tmp:
+            tmp.write(file_bytes)
+            tmp_path = tmp.name
         process = subprocess.run(
             [
                 "ffmpeg",
@@ -60,7 +69,7 @@ def read_audio_to_numpy(file_bytes: bytes, filename: str = "audio") -> tuple[np.
                 "-v",
                 "error",
                 "-i",
-                "pipe:0",
+                tmp_path,
                 "-f",
                 "f32le",
                 "-acodec",
@@ -71,7 +80,6 @@ def read_audio_to_numpy(file_bytes: bytes, filename: str = "audio") -> tuple[np.
                 str(TARGET_SAMPLE_RATE),
                 "pipe:1",
             ],
-            input=file_bytes,
             capture_output=True,
             check=True,
         )
@@ -82,9 +90,15 @@ def read_audio_to_numpy(file_bytes: bytes, filename: str = "audio") -> tuple[np.
     except Exception as ffmpeg_error:
         raise ValueError(
             f"Could not read audio file '{filename}'. "
-            "Supported formats: WAV, MP3, FLAC, OGG, WebM and other ffmpeg-decodable "
+            "Supported formats: WAV, MP3, FLAC, OGG, WebM, M4A and other ffmpeg-decodable "
             f"audio. soundfile/librosa error: {librosa_error}. ffmpeg error: {ffmpeg_error}"
         ) from ffmpeg_error
+    finally:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 def pcm16le_to_float32(

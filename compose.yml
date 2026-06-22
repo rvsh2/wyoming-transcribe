@@ -8,15 +8,23 @@ services:
     restart: unless-stopped
     ports:
       - "0.0.0.0:10300:10300"
+      - "0.0.0.0:8580:8580"
     networks:
       - bridge-network
     volumes:
       - /opt/wyoming-transcribe/data:/root/.cache/huggingface
+      - /opt/wyoming-transcribe/speakers:/app/speakers
     environment:
       - HF_HOME=/root/.cache/huggingface
       - HF_TOKEN=${HF_TOKEN:-}
       - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:-}
       - NVIDIA_VISIBLE_DEVICES=all
+      # Speaker identification (diarize -> named speakers via ECAPA enrollment)
+      - SPEAKER_ID_ENABLED=true
+      - SPEAKER_ENROLLMENT_DIR=/app/speakers
+      - SPEAKER_MATCH_THRESHOLD=0.35
+      - SPEAKER_MODEL=speechbrain/spkrec-ecapa-voxceleb
+      - SPEAKER_MODEL_CACHE=/root/.cache/huggingface/ecapa
       - VAD_ENABLED=true
       - VAD_THRESHOLD=0.54
       - VAD_MIN_SPEECH_DURATION_MS=180

@@ -127,6 +127,49 @@
             line-height: 1.6;
         }
         .status { color: #2cb67d; font-weight: 600; }
+        .speaker-add {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 0.5rem;
+            margin-bottom: 0.75rem;
+        }
+        input[type="text"] {
+            width: 100%;
+            padding: 0.9rem 1rem;
+            background: rgba(0,0,0,0.25);
+            color: #fffffe;
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 10px;
+        }
+        .speaker-card {
+            padding: 1rem;
+            border-radius: 12px;
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.08);
+            margin-top: 0.75rem;
+        }
+        .speaker-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }
+        .speaker-name { font-weight: 700; color: #fffffe; font-size: 1.1rem; }
+        .speaker-meta { color: #94a1b2; font-size: 0.85rem; }
+        .sample-row {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            padding: 0.5rem 0;
+            border-top: 1px solid rgba(255,255,255,0.06);
+            flex-wrap: wrap;
+        }
+        .sample-row audio { height: 36px; }
+        .sample-meta { color: #94a1b2; font-size: 0.82rem; }
+        .btn-small { padding: 0.5rem 0.9rem; font-size: 0.85rem; }
+        .spacer { flex: 1; }
+        .empty-hint { color: #94a1b2; font-size: 0.9rem; padding: 0.5rem 0; }
         @media (max-width: 768px) {
             body {
                 padding: 0.65rem;
@@ -194,6 +237,18 @@
     </div>
 
     <div class="card">
+        <h2>Mówcy — rozpoznawanie głosu</h2>
+        <p class="hint">Zdefiniuj osoby i nagraj/wgraj próbki głosu. Im dłuższa i czystsza próbka
+            (zalecane 10–30 s), tym pewniejsze rozpoznawanie. Zmiany są od razu widoczne dla silnika.</p>
+        <div class="speaker-add">
+            <input id="new-speaker-name" type="text" placeholder="Imię nowej osoby" autocomplete="off">
+            <button id="add-speaker-button" type="button">Dodaj osobę</button>
+        </div>
+        <div id="speakers-status" class="hint"></div>
+        <div id="speakers-list"></div>
+    </div>
+
+    <div class="card">
         <h2>Supported Languages</h2>
         <div>__SUPPORTED_LANGUAGE_BADGES__</div>
     </div>
@@ -213,7 +268,7 @@
 
     <div class="card">
         <h2>Example (curl)</h2>
-        <pre><code>curl http://127.0.0.1:8080/inference \
+        <pre><code>curl http://127.0.0.1:8580/inference \
   -H "Content-Type: multipart/form-data" \
   -F file="@audio.wav" \
   -F temperature="0.0" \
@@ -418,6 +473,261 @@ form.addEventListener("submit", async (event) => {
 });
 
 updateSourceSummary();
+</script>
+<script>
+const speakersList = document.getElementById("speakers-list");
+const speakersStatus = document.getElementById("speakers-status");
+const newSpeakerName = document.getElementById("new-speaker-name");
+const addSpeakerButton = document.getElementById("add-speaker-button");
+
+let speakerRecorder = null;
+let speakerStream = null;
+let speakerChunks = [];
+
+function setSpeakersStatus(message, isError) {
+    speakersStatus.textContent = message || "";
+    speakersStatus.style.color = isError ? "#ffb4be" : "#94a1b2";
+}
+
+function speakerMime() {
+    const types = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
+    if (typeof MediaRecorder === "undefined") return "";
+    return types.find((t) => MediaRecorder.isTypeSupported(t)) || "";
+}
+
+async function apiRequest(url, options) {
+    const response = await fetch(url, options);
+    let payload = {};
+    try { payload = await response.json(); } catch (e) { /* file or empty */ }
+    if (!response.ok) {
+        throw new Error(payload.detail || `Request failed (${response.status})`);
+    }
+    return payload;
+}
+
+async function loadSpeakers() {
+    try {
+        const data = await apiRequest("/speakers");
+        renderSpeakers(data.speakers || [], data.speaker_id || {});
+    } catch (error) {
+        setSpeakersStatus(`Błąd wczytywania: ${error.message}`, true);
+    }
+}
+
+function renderSpeakers(speakers, status) {
+    const enabled = status.enabled;
+    setSpeakersStatus(
+        enabled
+            ? `Rozpoznawanie włączone (próg ${status.threshold}). Rozpoznawani: ${(status.speakers || []).join(", ") || "brak"}.`
+            : "Rozpoznawanie wyłączone (SPEAKER_ID_ENABLED=false) — możesz przygotować próbki teraz.",
+        false
+    );
+
+    speakersList.innerHTML = "";
+    if (!speakers.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty-hint";
+        empty.textContent = "Brak zdefiniowanych osób. Dodaj pierwszą powyżej.";
+        speakersList.appendChild(empty);
+        return;
+    }
+
+    for (const speaker of speakers) {
+        speakersList.appendChild(renderSpeakerCard(speaker));
+    }
+}
+
+function renderSpeakerCard(speaker) {
+    const card = document.createElement("div");
+    card.className = "speaker-card";
+
+    const head = document.createElement("div");
+    head.className = "speaker-head";
+    const totalSeconds = speaker.samples.reduce((sum, s) => sum + (s.seconds || 0), 0);
+
+    const title = document.createElement("div");
+    title.innerHTML =
+        `<span class="speaker-name">${escapeHtml(speaker.name)}</span>` +
+        `<div class="speaker-meta">${speaker.samples.length} próbek · ${totalSeconds.toFixed(1)} s łącznie</div>`;
+    head.appendChild(title);
+
+    const actions = document.createElement("div");
+    actions.className = "button-row";
+
+    const recordBtn = document.createElement("button");
+    recordBtn.className = "button-secondary btn-small";
+    recordBtn.type = "button";
+    recordBtn.textContent = "Nagraj";
+    recordBtn.addEventListener("click", () => toggleSpeakerRecording(speaker.name, recordBtn));
+
+    const uploadLabel = document.createElement("label");
+    uploadLabel.className = "button button-secondary btn-small";
+    uploadLabel.textContent = "Wgraj plik";
+    const uploadInput = document.createElement("input");
+    uploadInput.type = "file";
+    uploadInput.accept = "audio/*";
+    uploadInput.style.display = "none";
+    uploadInput.addEventListener("change", () => {
+        if (uploadInput.files.length) {
+            uploadSample(speaker.name, uploadInput.files[0]);
+        }
+    });
+    uploadLabel.appendChild(uploadInput);
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.className = "button-danger btn-small";
+    deleteBtn.type = "button";
+    deleteBtn.textContent = "Usuń osobę";
+    deleteBtn.addEventListener("click", () => deleteSpeaker(speaker.name));
+
+    actions.appendChild(recordBtn);
+    actions.appendChild(uploadLabel);
+    actions.appendChild(deleteBtn);
+    head.appendChild(actions);
+    card.appendChild(head);
+
+    if (!speaker.samples.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty-hint";
+        empty.textContent = "Brak próbek dla tej osoby.";
+        card.appendChild(empty);
+    }
+
+    for (const sample of speaker.samples) {
+        card.appendChild(renderSampleRow(speaker.name, sample));
+    }
+    return card;
+}
+
+function renderSampleRow(speakerName, sample) {
+    const row = document.createElement("div");
+    row.className = "sample-row";
+
+    const audio = document.createElement("audio");
+    audio.controls = true;
+    audio.preload = "none";
+    audio.src = `/speakers/${encodeURIComponent(speakerName)}/samples/${encodeURIComponent(sample.id)}`;
+
+    const meta = document.createElement("span");
+    meta.className = "sample-meta";
+    meta.textContent = `${(sample.seconds || 0).toFixed(1)} s`;
+
+    const spacer = document.createElement("div");
+    spacer.className = "spacer";
+
+    const del = document.createElement("button");
+    del.className = "button-danger btn-small";
+    del.type = "button";
+    del.textContent = "Usuń";
+    del.addEventListener("click", () => deleteSample(speakerName, sample.id));
+
+    row.appendChild(audio);
+    row.appendChild(meta);
+    row.appendChild(spacer);
+    row.appendChild(del);
+    return row;
+}
+
+function escapeHtml(value) {
+    const div = document.createElement("div");
+    div.textContent = value;
+    return div.innerHTML;
+}
+
+async function addSpeaker() {
+    const name = newSpeakerName.value.trim();
+    if (!name) {
+        setSpeakersStatus("Podaj imię osoby.", true);
+        return;
+    }
+    const form = new FormData();
+    form.append("name", name);
+    try {
+        await apiRequest("/speakers", { method: "POST", body: form });
+        newSpeakerName.value = "";
+        await loadSpeakers();
+    } catch (error) {
+        setSpeakersStatus(`Nie udało się dodać: ${error.message}`, true);
+    }
+}
+
+async function deleteSpeaker(name) {
+    if (!confirm(`Usunąć osobę "${name}" wraz ze wszystkimi próbkami?`)) return;
+    try {
+        await apiRequest(`/speakers/${encodeURIComponent(name)}`, { method: "DELETE" });
+        await loadSpeakers();
+    } catch (error) {
+        setSpeakersStatus(`Nie udało się usunąć: ${error.message}`, true);
+    }
+}
+
+async function deleteSample(name, sampleId) {
+    try {
+        await apiRequest(
+            `/speakers/${encodeURIComponent(name)}/samples/${encodeURIComponent(sampleId)}`,
+            { method: "DELETE" }
+        );
+        await loadSpeakers();
+    } catch (error) {
+        setSpeakersStatus(`Nie udało się usunąć próbki: ${error.message}`, true);
+    }
+}
+
+async function uploadSample(name, file) {
+    const form = new FormData();
+    form.append("file", file);
+    setSpeakersStatus(`Wgrywanie próbki dla ${name}...`, false);
+    try {
+        await apiRequest(`/speakers/${encodeURIComponent(name)}/samples`, {
+            method: "POST",
+            body: form,
+        });
+        await loadSpeakers();
+    } catch (error) {
+        setSpeakersStatus(`Nie udało się wgrać: ${error.message}`, true);
+    }
+}
+
+async function toggleSpeakerRecording(name, button) {
+    if (speakerRecorder && speakerRecorder.state === "recording") {
+        speakerRecorder.stop();
+        button.textContent = "Nagraj";
+        button.classList.remove("button-danger");
+        return;
+    }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === "undefined") {
+        setSpeakersStatus("Nagrywanie z mikrofonu nie jest wspierane w tej przeglądarce.", true);
+        return;
+    }
+    try {
+        speakerStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        speakerChunks = [];
+        const mime = speakerMime();
+        speakerRecorder = mime ? new MediaRecorder(speakerStream, { mimeType: mime }) : new MediaRecorder(speakerStream);
+        speakerRecorder.addEventListener("dataavailable", (event) => {
+            if (event.data && event.data.size > 0) speakerChunks.push(event.data);
+        });
+        speakerRecorder.addEventListener("stop", () => {
+            speakerStream.getTracks().forEach((track) => track.stop());
+            const blob = speakerChunks.length ? new Blob(speakerChunks, { type: mime || "audio/webm" }) : null;
+            if (blob) {
+                uploadSample(name, new File([blob], "recording.webm", { type: blob.type }));
+            }
+        });
+        speakerRecorder.start();
+        button.textContent = "Zatrzymaj";
+        button.classList.add("button-danger");
+        setSpeakersStatus(`Nagrywanie dla ${name}... kliknij „Zatrzymaj”, by zapisać.`, false);
+    } catch (error) {
+        setSpeakersStatus(`Brak dostępu do mikrofonu: ${error.message}`, true);
+    }
+}
+
+addSpeakerButton.addEventListener("click", addSpeaker);
+newSpeakerName.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); addSpeaker(); }
+});
+loadSpeakers();
 </script>
 </body>
 </html>

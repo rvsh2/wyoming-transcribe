@@ -311,16 +311,17 @@ class CohereTranscribeApiTests(unittest.TestCase):
         self.assertGreater(len(mono_audio), 0)
 
     def test_temperature_controls_generate_sampling(self):
-        fake_inputs = {
-            "audio_chunk_index": None,
-            "input_features": SimpleNamespace(),
-        }
-
         class FakeBatch(dict):
             def to(self, device, dtype=None):
                 return self
 
-        fake_inputs = FakeBatch(fake_inputs)
+        fake_inputs = FakeBatch(
+            {
+                "audio_chunk_index": [0],
+                "input_features": torch.zeros(1, 4, 8),
+                "attention_mask": torch.ones(1, 4),
+            }
+        )
 
         class FakeModel:
             device = "cpu"
@@ -331,14 +332,22 @@ class CohereTranscribeApiTests(unittest.TestCase):
 
             def generate(self, **kwargs):
                 self.calls.append(kwargs)
-                return "tokens"
+                return torch.tensor([[1, 2, 3]])
 
-        class FakeProcessor:
-            def __call__(self, *args, **kwargs):
-                return fake_inputs
+        class FakeTokenizer:
+            unk_token_id = 0
+
+            def convert_tokens_to_ids(self, _token):
+                return 5
 
             def decode(self, *args, **kwargs):
-                return "decoded"
+                return "<|diarize|><|spltoken0|><|t:0.0|> decoded <|t:1.0|><|endoftext|>"
+
+        class FakeProcessor:
+            tokenizer = FakeTokenizer()
+
+            def __call__(self, *args, **kwargs):
+                return fake_inputs
 
         fake_model = FakeModel()
         fake_processor = FakeProcessor()

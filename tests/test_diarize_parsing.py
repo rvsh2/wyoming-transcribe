@@ -1,0 +1,122 @@
+"""Unit tests for diarize output parsing, chunking and rendering.
+
+The RAW strings below are real outputs captured from syvai/cohere-transcribe-diarize
+during the implementation spike (see DIARIZE_PLAN.md).
+"""
+import unittest
+
+import numpy as np
+
+from cohere_wyoming.transcriber import (
+    chunk_audio,
+    parse_diarized_output,
+    render_speaker_text,
+)
+
+
+# Real spike output for Recording.wav (12.6s, multi-speaker).
+SPIKE_RAW = (
+    "<|startofcontext|><|startoftranscript|><|emo:undefined|><|en|><|en|><|pnc|>"
+    "<|noitn|><|timestamp|><|diarize|>"
+    "<|spltoken0|><|t:0.3|> Robimy now the testeras do WAVA, how it works.<|t:3.5|>"
+    "<|spltoken1|><|t:3.7|> Yeah, yeah. I'm gonna go ahead and see what you guys think about that.<|t:0.4|>"
+    "<|spltoken2|><|t:0.7|> Robimy now the testeras do WAVA, like działa nash cooker whiskers,<|t:5.8|>"
+    "<|spltoken3|><|t:5.4|> Mm-hmm.<|t:0.5|>"
+    "<|spltoken0|><|t:6.0|> If it does not work, it's a bit of a problem.<|t:0.6|>"
+    "<|endoftext|>"
+)
+
+# Model-card example format.
+CARD_RAW = "<|spltoken0|><|t:0.0|> Welcome back.<|t:2.4|><|spltoken1|><|t:2.4|>"
+
+
+class ParseDiarizedOutputTests(unittest.TestCase):
+    def test_parses_all_segments_from_real_output(self):
+        segments = parse_diarized_output(SPIKE_RAW)
+        self.assertEqual([s["speaker"] for s in segments], [0, 1, 2, 3, 0])
+        self.assertEqual(segments[0]["text"], "Robimy now the testeras do WAVA, how it works.")
+        self.assertEqual(segments[0]["start"], 0.3)
+        self.assertEqual(segments[0]["end"], 3.5)
+        self.assertEqual(segments[3]["text"], "Mm-hmm.")
+        self.assertEqual(segments[4]["text"], "If it does not work, it's a bit of a problem.")
+
+    def test_strips_prompt_prefix_and_special_tokens(self):
+        segments = parse_diarized_output(SPIKE_RAW)
+        for segment in segments:
+            self.assertNotIn("<|", segment["text"])
+            self.assertNotIn("startoftranscript", segment["text"])
+
+    def test_offset_shifts_timestamps(self):
+        segments = parse_diarized_output(SPIKE_RAW, offset=30.0)
+        self.assertEqual(segments[0]["start"], 30.3)
+        self.assertEqual(segments[0]["end"], 33.5)
+
+    def test_card_format_drops_trailing_empty_segment(self):
+        segments = parse_diarized_output(CARD_RAW)
+        self.assertEqual(len(segments), 1)
+        self.assertEqual(segments[0]["speaker"], 0)
+        self.assertEqual(segments[0]["text"], "Welcome back.")
+        self.assertEqual(segments[0]["end"], 2.4)
+
+    def test_plain_text_without_diarize_tokens_falls_back(self):
+        segments = parse_diarized_output("just some plain text")
+        self.assertEqual(len(segments), 1)
+        self.assertEqual(segments[0]["speaker"], 0)
+        self.assertEqual(segments[0]["text"], "just some plain text")
+
+    def test_empty_output_yields_no_segments(self):
+        self.assertEqual(parse_diarized_output("<|diarize|><|endoftext|>"), [])
+
+
+class RenderSpeakerTextTests(unittest.TestCase):
+    def test_renders_one_line_per_turn(self):
+        text = render_speaker_text(parse_diarized_output(SPIKE_RAW))
+        lines = text.split("\n")
+        self.assertEqual(len(lines), 5)
+        self.assertTrue(lines[0].startswith("Mówca 0: Robimy"))
+        self.assertTrue(lines[1].startswith("Mówca 1: Yeah"))
+        self.assertTrue(lines[4].startswith("Mówca 0: If it does not work"))
+
+    def test_merges_consecutive_same_speaker(self):
+        segments = [
+            {"speaker": 0, "start": 0.0, "end": 1.0, "text": "Hello there."},
+            {"speaker": 0, "start": 1.0, "end": 2.0, "text": "How are you?"},
+            {"speaker": 1, "start": 2.0, "end": 3.0, "text": "Fine."},
+        ]
+        self.assertEqual(
+            render_speaker_text(segments),
+            "Mówca 0: Hello there. How are you?\nMówca 1: Fine.",
+        )
+
+    def test_empty_segments_render_empty_string(self):
+        self.assertEqual(render_speaker_text([]), "")
+
+    def test_uses_enrolled_name_when_present(self):
+        segments = [
+            {"speaker": 0, "start": 0.0, "end": 1.0, "text": "Hi.", "name": "Krzysztof"},
+            {"speaker": 1, "start": 1.0, "end": 2.0, "text": "Yo."},
+        ]
+        self.assertEqual(
+            render_speaker_text(segments),
+            "Krzysztof: Hi.\nMówca 1: Yo.",
+        )
+
+
+class ChunkAudioTests(unittest.TestCase):
+    def test_short_audio_is_single_chunk(self):
+        audio = np.zeros(16000 * 5, dtype=np.float32)
+        chunks = chunk_audio(audio, 16000)
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0][1], 0.0)
+
+    def test_long_audio_is_split_into_30s_windows(self):
+        audio = np.zeros(16000 * 70, dtype=np.float32)
+        chunks = chunk_audio(audio, 16000)
+        self.assertEqual(len(chunks), 3)
+        self.assertEqual([offset for _, offset in chunks], [0.0, 30.0, 60.0])
+        self.assertEqual(len(chunks[0][0]), 16000 * 30)
+        self.assertEqual(len(chunks[2][0]), 16000 * 10)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -102,12 +102,13 @@ class AudioAndTranscriberTests(unittest.TestCase):
         ):
             processor, model = transcriber.load_model_artifacts("offline-first-model")
 
+        dtype = transcriber._model_dtype()
         self.assertEqual(
             call_log,
             [
                 ("processor", {"trust_remote_code": False, "local_files_only": True}),
                 ("processor", {"trust_remote_code": False}),
-                ("model", {"trust_remote_code": False}),
+                ("model", {"trust_remote_code": False, "dtype": dtype}),
             ],
         )
         self.assertIs(processor, fake_processor)
@@ -203,14 +204,27 @@ class AudioAndTranscriberTests(unittest.TestCase):
             dtype = torch.float32
 
             def generate(self, **_kwargs):
-                return [[1, 2, 3]]
+                return torch.tensor([[1, 2, 3]])
 
-        class FakeProcessor:
-            def __call__(self, *_args, **_kwargs):
-                return FakeInputs()
+        class FakeTokenizer:
+            unk_token_id = 0
+
+            def convert_tokens_to_ids(self, _token):
+                return 5
 
             def decode(self, *_args, **_kwargs):
-                return "speech detected"
+                return (
+                    "<|diarize|><|spltoken0|><|t:0.0|> speech detected <|t:1.0|><|endoftext|>"
+                )
+
+        class FakeProcessor:
+            tokenizer = FakeTokenizer()
+
+            def __call__(self, *_args, **_kwargs):
+                return FakeInputs(
+                    input_features=torch.zeros(1, 4, 8),
+                    attention_mask=torch.ones(1, 4),
+                )
 
         transcriber.model = FakeModel()
         transcriber.processor = FakeProcessor()
@@ -231,7 +245,10 @@ class AudioAndTranscriberTests(unittest.TestCase):
         audio = 0.05 * np.sin(2 * np.pi * 220.0 * t)
         result = transcriber.transcribe_pcm(audio, sample_rate=16000, language="pl")
 
-        self.assertEqual(result.text, "speech detected")
+        self.assertEqual(result.text, "Mówca 0: speech detected")
+        self.assertEqual(len(result.segments), 1)
+        self.assertEqual(result.segments[0]["speaker"], 0)
+        self.assertEqual(result.segments[0]["text"], "speech detected")
 
     def test_vad_rejects_too_quiet_detected_speech(self):
         transcriber = CohereTranscriber()

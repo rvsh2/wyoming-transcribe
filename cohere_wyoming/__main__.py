@@ -10,6 +10,7 @@ from typing import Optional
 import torch
 
 from .handler import CohereWyomingEventHandler
+from .speaker_id import SpeakerRegistry
 from .transcriber import CohereTranscriber, SUPPORTED_LANGUAGES
 from .vad import VadConfig
 from .wyoming_protocol import (
@@ -28,10 +29,10 @@ LOGGER = logging.getLogger("cohere-wyoming")
 def build_info(transcriber: CohereTranscriber) -> Info:
     model = AsrModel(
         name=transcriber.model_name,
-        description="Cohere Transcribe speech-to-text model",
+        description="Cohere Transcribe speech-to-text model with speaker diarization",
         attribution=Attribution(
-            name="Cohere",
-            url="https://huggingface.co/CohereLabs/cohere-transcribe-03-2026",
+            name="syvai / Cohere",
+            url="https://huggingface.co/syvai/cohere-transcribe-diarize",
         ),
         installed=True,
         languages=sorted(SUPPORTED_LANGUAGES),
@@ -64,7 +65,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "-m",
         "--model",
-        default="CohereLabs/cohere-transcribe-03-2026",
+        default="syvai/cohere-transcribe-diarize",
         help="Hugging Face model ID or local path",
     )
     parser.add_argument(
@@ -120,6 +121,7 @@ async def serve(args: argparse.Namespace) -> None:
             enabled=False if args.disable_vad else default_vad_config.enabled,
             threshold=args.vad_threshold if args.vad_threshold is not None else default_vad_config.threshold,
         ),
+        speaker_registry=SpeakerRegistry.from_env(device=args.device),
     )
     transcriber.load()
 
