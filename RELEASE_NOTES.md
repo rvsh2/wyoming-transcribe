@@ -32,6 +32,13 @@
 - `_build_prompt_ids` fails fast on a missing structural token and falls back to English for a missing language token; prompt ids are cached per language.
 - Batched ECAPA embedding for per-segment identification; `delete_speaker` uses `rmtree`; sample filenames include a uuid to avoid same-millisecond collisions.
 
+### Second review pass
+
+- Validate diarize structural tokens at model load (fail fast at startup) instead of crashing the first request; the language token now falls back to the configured default language, then English.
+- `verbose_json` segments now expose the identified speaker `name`/`score`.
+- `embed_batch` caps clips at 15 s to bound padded-batch memory, and `embed` delegates to it so enrollment and match-time embeddings are computed identically.
+- `/speakers` reports enrolled people via the `enrolled` field (the registry's `speakers` list stays for the Wyoming process).
+
 ### Verification
 
 - `60` unit tests pass (new suites: diarization parsing, speaker identification, enrollment).

@@ -56,8 +56,17 @@ class AudioAndTranscriberTests(unittest.TestCase):
             def eval(self):
                 self.eval_called = True
 
+        class FakeTokenizer:
+            unk_token_id = 0
+
+            def convert_tokens_to_ids(self, _token):
+                return 5
+
+        class FakeProcessor:
+            tokenizer = FakeTokenizer()
+
         fake_model = FakeModel()
-        fake_processor = object()
+        fake_processor = FakeProcessor()
 
         with patch.object(
             transcriber,
@@ -305,6 +314,51 @@ class AudioAndTranscriberTests(unittest.TestCase):
 
         self.assertEqual(result.text, "")
         fake_model.generate.assert_not_called()
+
+
+class PromptTokenTests(unittest.TestCase):
+    def _transcriber(self, known: dict) -> CohereTranscriber:
+        transcriber = CohereTranscriber(default_language="pl")
+
+        class Tok:
+            unk_token_id = 0
+
+            def convert_tokens_to_ids(self, token):
+                return known.get(token, 0)  # 0 == unk == "missing"
+
+        class Proc:
+            tokenizer = Tok()
+
+        transcriber.processor = Proc()
+        transcriber.model = SimpleNamespace(device="cpu")
+        return transcriber
+
+    @staticmethod
+    def _structural(**extra) -> dict:
+        from cohere_wyoming.transcriber import DIARIZE_PROMPT_TEMPLATE
+
+        known = {tpl: 5 for tpl in DIARIZE_PROMPT_TEMPLATE if "{lang}" not in tpl}
+        known.update(extra)
+        return known
+
+    def test_validate_structural_tokens_raises_when_missing(self):
+        known = self._structural()
+        del known["<|diarize|>"]
+        with self.assertRaises(RuntimeError):
+            self._transcriber(known)._validate_structural_prompt_tokens()
+
+    def test_validate_structural_tokens_passes_when_present(self):
+        self._transcriber(self._structural())._validate_structural_prompt_tokens()
+
+    def test_language_token_falls_back_to_default_then_en(self):
+        transcriber = self._transcriber(self._structural(**{"<|en|>": 62}))
+        transcriber.default_language = "de"  # also absent -> should reach <|en|>
+        self.assertEqual(transcriber._language_token_id("pl"), 62)
+
+    def test_build_prompt_ids_uses_requested_language_when_present(self):
+        transcriber = self._transcriber(self._structural(**{"<|pl|>": 99}))
+        ids = transcriber._build_prompt_ids("pl").tolist()[0]
+        self.assertEqual(ids.count(99), 2)  # <|{lang}|> appears twice in the prompt
 
 
 if __name__ == "__main__":

@@ -365,6 +365,19 @@ class CohereTranscribeApiTests(unittest.TestCase):
         self.assertTrue(sampling_call["do_sample"])
         self.assertEqual(sampling_call["temperature"], 0.7)
 
+    def test_build_segments_exposes_name_and_clamps_end(self):
+        result = {
+            "text": "x",
+            "duration": 5.0,
+            "segments": [
+                {"speaker": 1, "name": "Anna", "score": 0.7, "start": 3.7, "end": 0.4, "text": "hi"}
+            ],
+        }
+        segment = server.build_segments(result)[0]
+        self.assertEqual(segment["name"], "Anna")
+        self.assertEqual(segment["score"], 0.7)
+        self.assertGreaterEqual(segment["end"], segment["start"])
+
     def test_silent_audio_returns_empty_transcription_without_model_call(self):
         silent_audio = np.zeros(16000, dtype=np.float32)
 

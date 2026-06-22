@@ -32,6 +32,9 @@ DEFAULT_THRESHOLD = 0.35
 TARGET_SR = 16000
 # Segments shorter than this are too short for a reliable voiceprint.
 MIN_MATCH_SAMPLES = int(0.4 * TARGET_SR)
+# ECAPA gains nothing from very long clips; cap to bound batch padding/memory
+# and keep enrollment and match-time embeddings computed identically.
+MAX_MATCH_SAMPLES = int(15 * TARGET_SR)
 CACHE_FILENAME = ".embeddings.json"
 
 
@@ -118,33 +121,23 @@ class SpeakerRegistry:
         )
 
     def embed(self, audio: np.ndarray) -> Optional[np.ndarray]:
-        """Return an L2-normalized ECAPA embedding, or None if audio is too short."""
-        if audio is None or len(audio) < MIN_MATCH_SAMPLES:
-            return None
+        """Return an L2-normalized ECAPA embedding, or None if audio is too short.
 
-        import torch
-
-        self._ensure_encoder()
-        wav = torch.tensor(np.asarray(audio, dtype=np.float32)).unsqueeze(0)
-        if self._device == "cuda":
-            wav = wav.cuda()
-        with torch.no_grad():
-            embedding = self._encoder.encode_batch(wav).squeeze().detach().cpu().numpy()
-        embedding = np.asarray(embedding, dtype=np.float32).reshape(-1)
-        norm = float(np.linalg.norm(embedding))
-        if norm == 0.0:
-            return None
-        return embedding / norm
+        Single-clip convenience wrapper so enrollment and match-time embeddings
+        go through the exact same code path (embed_batch).
+        """
+        return self.embed_batch([audio])[0]
 
     def embed_batch(self, clips: list[Optional[np.ndarray]]) -> list[Optional[np.ndarray]]:
         """Embed several segments in one padded ECAPA forward pass.
 
         Returns one L2-normalized embedding per input position; None for clips
-        that are missing or too short.
+        that are missing or too short. Clips are capped at MAX_MATCH_SAMPLES to
+        bound the padded batch width.
         """
         results: list[Optional[np.ndarray]] = [None] * len(clips)
         valid = [
-            (index, np.asarray(clip, dtype=np.float32))
+            (index, np.asarray(clip, dtype=np.float32)[:MAX_MATCH_SAMPLES])
             for index, clip in enumerate(clips)
             if clip is not None and len(clip) >= MIN_MATCH_SAMPLES
         ]

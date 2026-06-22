@@ -321,6 +321,8 @@ class CohereTranscriber:
         self.model = next_model
         self.device = next_device
         self._prompt_id_cache.clear()
+        # Fail fast here rather than crashing the first request mid-transcription.
+        self._validate_structural_prompt_tokens()
 
         elapsed = time.time() - start_time
         LOGGER.info("Model loaded in %.1fs using backend=%s", elapsed, self.backend)
@@ -417,40 +419,70 @@ class CohereTranscriber:
             segments=segments,
         )
 
+    def _resolve_prompt_token(self, token: str) -> Optional[int]:
+        """Return the token id, or None if the tokenizer lacks it (unk)."""
+        tokenizer = self.processor.tokenizer
+        token_id = tokenizer.convert_tokens_to_ids(token)
+        if token_id is None or token_id == tokenizer.unk_token_id:
+            return None
+        return token_id
+
+    def _validate_structural_prompt_tokens(self) -> None:
+        """Fail fast at load time if the model lacks the diarize structural tokens."""
+        missing = [
+            template
+            for template in DIARIZE_PROMPT_TEMPLATE
+            if "{lang}" not in template and self._resolve_prompt_token(template) is None
+        ]
+        if missing:
+            raise RuntimeError(
+                f"Model {self.model_name} is not diarize-capable: tokenizer is missing "
+                f"prompt tokens {missing}."
+            )
+
+    def _language_token_id(self, language: str) -> int:
+        """Resolve the <|lang|> token, falling back to the default language then English."""
+        seen: list[str] = []
+        for candidate in (language, self.default_language, "en"):
+            if candidate in seen:
+                continue
+            seen.append(candidate)
+            token_id = self._resolve_prompt_token(f"<|{candidate}|>")
+            if token_id is not None:
+                if candidate != language:
+                    LOGGER.warning(
+                        "Language token '<|%s|>' missing; falling back to '<|%s|>'",
+                        language,
+                        candidate,
+                    )
+                return token_id
+        raise RuntimeError(
+            f"No usable language prompt token for '{language}' in model {self.model_name}"
+        )
+
     def _build_prompt_ids(self, language: str) -> torch.Tensor:
         """Build (and cache per language) the diarize decoder prompt token ids.
 
-        Structural tokens (diarize/timestamp/...) must exist or we fail fast; a
-        missing language token falls back to English rather than feeding the
-        decoder an unk token that silently disables diarization.
+        Structural tokens are validated once at load(); the language token falls
+        back to the default language (then English) if absent.
         """
         cached = self._prompt_id_cache.get(language)
         if cached is not None:
             return cached
 
-        tokenizer = self.processor.tokenizer
-        unk_id = tokenizer.unk_token_id
+        ids: list[int] = []
+        for template in DIARIZE_PROMPT_TEMPLATE:
+            if "{lang}" in template:
+                ids.append(self._language_token_id(language))
+            else:
+                token_id = self._resolve_prompt_token(template)
+                if token_id is None:
+                    raise RuntimeError(
+                        f"Diarize prompt token '{template}' missing from tokenizer for "
+                        f"model {self.model_name}"
+                    )
+                ids.append(token_id)
 
-        def resolve(token: str, *, is_lang_token: bool) -> int:
-            token_id = tokenizer.convert_tokens_to_ids(token)
-            if token_id is not None and token_id != unk_id:
-                return token_id
-            if is_lang_token:
-                fallback = "<|en|>"
-                LOGGER.warning(
-                    "Language prompt token '%s' missing; falling back to '%s'", token, fallback
-                )
-                fallback_id = tokenizer.convert_tokens_to_ids(fallback)
-                if fallback_id is not None and fallback_id != unk_id:
-                    return fallback_id
-            raise RuntimeError(
-                f"Diarize prompt token '{token}' missing from tokenizer for model {self.model_name}"
-            )
-
-        ids = [
-            resolve(template.format(lang=language), is_lang_token="{lang}" in template)
-            for template in DIARIZE_PROMPT_TEMPLATE
-        ]
         prompt = torch.tensor([ids], device=self.model.device)
         self._prompt_id_cache[language] = prompt
         return prompt

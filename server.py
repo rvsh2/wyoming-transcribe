@@ -141,6 +141,8 @@ def build_segments(result: dict) -> list[dict]:
                 {
                     "id": index,
                     "speaker": segment.get("speaker"),
+                    "name": segment.get("name"),
+                    "score": segment.get("score"),
                     "start": start,
                     # The model can emit end < start; clamp so consumers (SRT/VTT)
                     # never get a negative-duration cue.
