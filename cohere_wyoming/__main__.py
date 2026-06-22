@@ -125,6 +125,15 @@ async def serve(args: argparse.Namespace) -> None:
     )
     transcriber.load()
 
+    # Warm the speaker registry at startup (loads ECAPA + builds profiles) so the
+    # first transcription does not block the asyncio event loop on model download.
+    if transcriber.speaker_registry is not None and transcriber.speaker_registry.enabled:
+        try:
+            transcriber.speaker_registry.reload_if_changed()
+            LOGGER.info("Speaker identification ready: %s", transcriber.speaker_registry.status_payload())
+        except Exception as error:
+            LOGGER.warning("Speaker registry warm-up failed: %s", error)
+
     info_event = build_info(transcriber).event()
     server = AsyncServer.from_uri(args.uri)
 

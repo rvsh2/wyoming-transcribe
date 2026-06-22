@@ -133,16 +133,22 @@ def build_segments(result: dict) -> list[dict]:
     """Expose diarized speaker segments; fall back to one whole-utterance segment."""
     segments = result.get("segments") or []
     if segments:
-        return [
-            {
-                "id": index,
-                "speaker": segment.get("speaker"),
-                "start": segment.get("start", 0.0),
-                "end": segment.get("end", result["duration"]),
-                "text": segment.get("text", ""),
-            }
-            for index, segment in enumerate(segments)
-        ]
+        built = []
+        for index, segment in enumerate(segments):
+            start = segment.get("start", 0.0)
+            end = segment.get("end", result["duration"])
+            built.append(
+                {
+                    "id": index,
+                    "speaker": segment.get("speaker"),
+                    "start": start,
+                    # The model can emit end < start; clamp so consumers (SRT/VTT)
+                    # never get a negative-duration cue.
+                    "end": max(start, end),
+                    "text": segment.get("text", ""),
+                }
+            )
+        return built
     return [{"id": 0, "start": 0.0, "end": result["duration"], "text": result["text"]}]
 
 
@@ -401,12 +407,12 @@ def enrollment_store() -> EnrollmentStore:
 
 @app.get("/speakers")
 async def list_speakers():
-    return JSONResponse(
-        {
-            "speakers": enrollment_store().list_speakers(),
-            "speaker_id": service.speaker_registry.status_payload(),
-        }
-    )
+    speakers = enrollment_store().list_speakers()
+    # Report enrolled people from disk, not the live registry profiles: this
+    # (UI) process never loads embeddings, so registry._profiles is always empty.
+    status = service.speaker_registry.status_payload()
+    status["enrolled"] = [s["name"] for s in speakers if s["samples"]]
+    return JSONResponse({"speakers": speakers, "speaker_id": status})
 
 
 @app.post("/speakers")

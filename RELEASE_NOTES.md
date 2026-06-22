@@ -24,6 +24,14 @@
 
 - `read_audio_to_numpy` now decodes M4A/MP4 (ffmpeg via temp file instead of stdin pipe) and no longer crashes building its error message.
 
+### Review follow-ups
+
+- Clamp `end >= start` in verbose_json segments (the model can emit end < start).
+- Warm the speaker registry at Wyoming startup so the first request doesn't block the event loop on ECAPA load.
+- `/speakers` reports enrolled people from disk (the UI process never loads profiles).
+- `_build_prompt_ids` fails fast on a missing structural token and falls back to English for a missing language token; prompt ids are cached per language.
+- Batched ECAPA embedding for per-segment identification; `delete_speaker` uses `rmtree`; sample filenames include a uuid to avoid same-millisecond collisions.
+
 ### Verification
 
 - `60` unit tests pass (new suites: diarization parsing, speaker identification, enrollment).

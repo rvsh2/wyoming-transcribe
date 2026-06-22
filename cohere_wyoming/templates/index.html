@@ -516,10 +516,11 @@ async function loadSpeakers() {
 
 function renderSpeakers(speakers, status) {
     const enabled = status.enabled;
+    const enrolled = (status.enrolled || []).join(", ") || "brak";
     setSpeakersStatus(
         enabled
-            ? `Rozpoznawanie włączone (próg ${status.threshold}). Rozpoznawani: ${(status.speakers || []).join(", ") || "brak"}.`
-            : "Rozpoznawanie wyłączone (SPEAKER_ID_ENABLED=false) — możesz przygotować próbki teraz.",
+            ? `Rozpoznawanie włączone (próg ${status.threshold}). Osoby z próbkami: ${enrolled}.`
+            : `Rozpoznawanie wyłączone (SPEAKER_ID_ENABLED=false). Osoby z próbkami: ${enrolled}.`,
         false
     );
 

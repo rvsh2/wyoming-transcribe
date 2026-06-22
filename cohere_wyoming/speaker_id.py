@@ -136,6 +136,44 @@ class SpeakerRegistry:
             return None
         return embedding / norm
 
+    def embed_batch(self, clips: list[Optional[np.ndarray]]) -> list[Optional[np.ndarray]]:
+        """Embed several segments in one padded ECAPA forward pass.
+
+        Returns one L2-normalized embedding per input position; None for clips
+        that are missing or too short.
+        """
+        results: list[Optional[np.ndarray]] = [None] * len(clips)
+        valid = [
+            (index, np.asarray(clip, dtype=np.float32))
+            for index, clip in enumerate(clips)
+            if clip is not None and len(clip) >= MIN_MATCH_SAMPLES
+        ]
+        if not valid:
+            return results
+
+        import torch
+
+        self._ensure_encoder()
+        max_len = max(len(clip) for _, clip in valid)
+        batch = torch.zeros(len(valid), max_len, dtype=torch.float32)
+        wav_lens = torch.zeros(len(valid), dtype=torch.float32)
+        for row, (_, clip) in enumerate(valid):
+            batch[row, : len(clip)] = torch.from_numpy(clip)
+            wav_lens[row] = len(clip) / max_len
+        if self._device == "cuda":
+            batch = batch.cuda()
+            wav_lens = wav_lens.cuda()
+        with torch.no_grad():
+            embeddings = self._encoder.encode_batch(batch, wav_lens=wav_lens)
+        embeddings = embeddings.squeeze(1).detach().cpu().numpy()
+
+        for row, (index, _) in enumerate(valid):
+            vec = np.asarray(embeddings[row], dtype=np.float32).reshape(-1)
+            norm = float(np.linalg.norm(vec))
+            if norm > 0.0:
+                results[index] = vec / norm
+        return results
+
     # ------------------------------------------------------------- enrollment
     def _scan(self) -> list[tuple[str, Path]]:
         """Return (person, wav_path) pairs sorted deterministically."""
@@ -197,7 +235,12 @@ class SpeakerRegistry:
         return embedding
 
     def reload_if_changed(self) -> bool:
-        """Rebuild profiles if the enrollment directory changed. Returns True if reloaded."""
+        """Rebuild profiles if the enrollment directory changed. Returns True if reloaded.
+
+        The per-file stat scan runs on every call; a directory-mtime short-circuit
+        was considered but rejected because second-granular mtimes can miss a
+        change made within the same second as the previous scan.
+        """
         with self._lock:
             pairs = self._scan()
             signature = self._signature_of(pairs)
@@ -234,13 +277,8 @@ class SpeakerRegistry:
     def has_profiles(self) -> bool:
         return bool(self._profiles)
 
-    def identify(self, audio: np.ndarray) -> SpeakerMatch:
-        """Identify one audio segment against enrolled profiles."""
-        if not self.enabled or not self._profiles:
-            return SpeakerMatch(None, 0.0)
-
-        embedding = self.embed(audio)
-        if embedding is None:
+    def _match_embedding(self, embedding: Optional[np.ndarray]) -> SpeakerMatch:
+        if embedding is None or not self._profiles:
             return SpeakerMatch(None, 0.0)
 
         best_name: Optional[str] = None
@@ -253,6 +291,18 @@ class SpeakerRegistry:
         if best_score >= self.threshold:
             return SpeakerMatch(best_name, round(best_score, 3))
         return SpeakerMatch(None, round(best_score, 3))
+
+    def identify(self, audio: np.ndarray) -> SpeakerMatch:
+        """Identify one audio segment against enrolled profiles."""
+        if not self.enabled or not self._profiles:
+            return SpeakerMatch(None, 0.0)
+        return self._match_embedding(self.embed(audio))
+
+    def identify_batch(self, clips: list[Optional[np.ndarray]]) -> list[SpeakerMatch]:
+        """Identify several segments using one batched embedding pass."""
+        if not self.enabled or not self._profiles:
+            return [SpeakerMatch(None, 0.0) for _ in clips]
+        return [self._match_embedding(emb) for emb in self.embed_batch(clips)]
 
     def status_payload(self) -> dict:
         return {

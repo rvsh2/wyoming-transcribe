@@ -6,7 +6,9 @@ ECAPA embedding regardless of the original container/codec.
 from __future__ import annotations
 
 import re
+import shutil
 import time
+import uuid
 from pathlib import Path
 
 import soundfile as sf
@@ -85,9 +87,7 @@ class EnrollmentStore:
 
     def delete_speaker(self, name: str) -> None:
         path = self._person_dir(name, must_exist=True)
-        for child in path.iterdir():
-            child.unlink()
-        path.rmdir()
+        shutil.rmtree(path)
 
     def add_sample(self, name: str, file_bytes: bytes, filename: str = "audio") -> dict:
         person_dir = self._person_dir(name)
@@ -99,7 +99,7 @@ class EnrollmentStore:
         except ValueError as error:
             raise EnrollmentError(str(error)) from error
 
-        sample_id = f"sample-{int(time.time() * 1000)}.wav"
+        sample_id = f"sample-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}.wav"
         sf.write(str(person_dir / sample_id), audio, sample_rate)
         seconds = round(len(audio) / sample_rate, 2) if sample_rate else 0.0
         return {"id": sample_id, "seconds": seconds, "bytes": (person_dir / sample_id).stat().st_size}

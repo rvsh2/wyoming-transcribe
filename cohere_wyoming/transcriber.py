@@ -198,6 +198,7 @@ class CohereTranscriber:
         self.device = None
         self.vad_detector = SileroVoiceActivityDetector(vad_config or VadConfig.from_env())
         self.speaker_registry = speaker_registry
+        self._prompt_id_cache: dict[str, torch.Tensor] = {}
 
     def resolve_language(self, language: Optional[str]) -> str:
         """Resolve a requested language or fall back to the configured default."""
@@ -319,6 +320,7 @@ class CohereTranscriber:
         self.processor = next_processor
         self.model = next_model
         self.device = next_device
+        self._prompt_id_cache.clear()
 
         elapsed = time.time() - start_time
         LOGGER.info("Model loaded in %.1fs using backend=%s", elapsed, self.backend)
@@ -416,20 +418,42 @@ class CohereTranscriber:
         )
 
     def _build_prompt_ids(self, language: str) -> torch.Tensor:
-        """Build the diarize decoder prompt token ids for the given language."""
+        """Build (and cache per language) the diarize decoder prompt token ids.
+
+        Structural tokens (diarize/timestamp/...) must exist or we fail fast; a
+        missing language token falls back to English rather than feeding the
+        decoder an unk token that silently disables diarization.
+        """
+        cached = self._prompt_id_cache.get(language)
+        if cached is not None:
+            return cached
+
         tokenizer = self.processor.tokenizer
         unk_id = tokenizer.unk_token_id
-        ids: list[int] = []
-        for template in DIARIZE_PROMPT_TEMPLATE:
-            token = template.format(lang=language)
+
+        def resolve(token: str, *, is_lang_token: bool) -> int:
             token_id = tokenizer.convert_tokens_to_ids(token)
-            if token_id is None or token_id == unk_id:
+            if token_id is not None and token_id != unk_id:
+                return token_id
+            if is_lang_token:
+                fallback = "<|en|>"
                 LOGGER.warning(
-                    "Diarize prompt token '%s' missing from tokenizer; prompt may be malformed",
-                    token,
+                    "Language prompt token '%s' missing; falling back to '%s'", token, fallback
                 )
-            ids.append(token_id)
-        return torch.tensor([ids], device=self.model.device)
+                fallback_id = tokenizer.convert_tokens_to_ids(fallback)
+                if fallback_id is not None and fallback_id != unk_id:
+                    return fallback_id
+            raise RuntimeError(
+                f"Diarize prompt token '{token}' missing from tokenizer for model {self.model_name}"
+            )
+
+        ids = [
+            resolve(template.format(lang=language), is_lang_token="{lang}" in template)
+            for template in DIARIZE_PROMPT_TEMPLATE
+        ]
+        prompt = torch.tensor([ids], device=self.model.device)
+        self._prompt_id_cache[language] = prompt
+        return prompt
 
     def _generate_diarized(
         self,
@@ -458,6 +482,10 @@ class CohereTranscriber:
         # Override the processor's decoder prompt to force diarize + timestamps.
         model_inputs["decoder_input_ids"] = self._build_prompt_ids(language)
         if "attention_mask" not in model_inputs:
+            # Fallback only; this model's processor always returns attention_mask.
+            # input_features is (batch, frames, features) for cohere_asr, so
+            # shape[:2] = (batch, frames) is the correct mask shape (matches the
+            # model card's torch.ones(input_features.shape[:2])).
             features = model_inputs["input_features"]
             model_inputs["attention_mask"] = torch.ones(
                 features.shape[:2], device=self.model.device
@@ -495,16 +523,19 @@ class CohereTranscriber:
             return
 
         total_samples = len(audio_data)
+        clips: list[Optional[np.ndarray]] = []
         for segment in segments:
             start = max(0, int(segment["start"] * sample_rate))
             end = min(total_samples, int(segment["end"] * sample_rate))
-            if end <= start:
-                continue
-            try:
-                match = registry.identify(audio_data[start:end])
-            except Exception as error:
-                LOGGER.warning("Speaker identification failed: %s", error)
-                return
+            clips.append(audio_data[start:end] if end > start else None)
+
+        try:
+            matches = registry.identify_batch(clips)
+        except Exception as error:
+            LOGGER.warning("Speaker identification failed: %s", error)
+            return
+
+        for segment, match in zip(segments, matches):
             if match.name:
                 segment["name"] = match.name
                 segment["score"] = match.score
