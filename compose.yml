@@ -14,6 +14,11 @@ services:
     volumes:
       - /opt/wyoming-transcribe/data:/root/.cache/huggingface
       - /opt/wyoming-transcribe/speakers:/app/speakers
+      # Run patched entrypoint code without a full image rebuild (the Dockerfile
+      # COPYs code before installing deps, so rebuilding re-downloads torch). The
+      # source is committed, so a future `docker compose build` bakes this in and
+      # this overlay becomes a harmless no-op. Path is relative to this compose file.
+      - ./cohere_wyoming/__main__.py:/app/cohere_wyoming/__main__.py:ro
     environment:
       - HF_HOME=/root/.cache/huggingface
       - HF_TOKEN=${HF_TOKEN:-}

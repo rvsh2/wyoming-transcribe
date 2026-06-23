@@ -134,6 +134,21 @@ async def serve(args: argparse.Namespace) -> None:
         except Exception as error:
             LOGGER.warning("Speaker registry warm-up failed: %s", error)
 
+    # Warm the ASR/diarize model's generate path so the FIRST real transcription is
+    # fast (CUDA kernels compiled at startup). Calls _generate_diarized directly to
+    # bypass VAD; the dummy audio content is irrelevant.
+    try:
+        import time as _time
+
+        import numpy as _np
+
+        _t = _time.time()
+        _dummy = (_np.random.randn(16000).astype("float32") * 0.02)
+        transcriber._generate_diarized(_dummy, 16000, transcriber.default_language, 0.0)
+        LOGGER.info("ASR model warmup done in %.1fs", _time.time() - _t)
+    except Exception as error:  # warmup must never block serving
+        LOGGER.warning("ASR model warmup failed (continuing): %s", error)
+
     info_event = build_info(transcriber).event()
     server = AsyncServer.from_uri(args.uri)
 

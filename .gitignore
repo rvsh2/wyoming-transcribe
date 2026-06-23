@@ -13,3 +13,6 @@ memory.md
 implementation_plan.md
 DIARIZE_PLAN.md
 spike_diarize.py
+
+# transient download log
+model_dl.log

@@ -87,6 +87,27 @@ mounts `./speakers` for enrolled voices, and includes a ready-to-use VAD preset 
 Assistant. The container starts both services from `docker-entrypoint.sh` (the UI process
 runs with `--no-load-model`, so the ASR model is loaded only once, by the Wyoming process).
 
+### Startup, warmup and model cache
+
+On startup the Wyoming process loads the diarize model and then runs a short **ASR warmup**
+(a dummy `_generate_diarized` pass) so the *first* real transcription is fast instead of
+paying CUDA-kernel compilation on the first request.
+
+The model is downloaded from Hugging Face **once** into the cache volume
+(`/root/.cache/huggingface`) and loaded from that local copy on every subsequent start
+(load ≈ a few seconds, no re-download). Note: this model is distributed via **HF Xet**, so
+make sure the **first download fully completes** — if the container is killed mid-download,
+the weights stay `*.incomplete` (no `model.safetensors` snapshot symlink) and get re-fetched
+on each boot. To pre-fetch reliably without the container, run once:
+
+```bash
+docker run --rm -v /opt/wyoming-transcribe/data:/root/.cache/huggingface \
+  -e HF_TOKEN="$HF_TOKEN" python:3.12-slim \
+  sh -c "pip install -q huggingface_hub && hf download syvai/cohere-transcribe-diarize"
+```
+
+Do **not** set `HF_HUB_DISABLE_XET=1` (breaks weight resolution for this model).
+
 Manual container start is also possible:
 
 ```bash
