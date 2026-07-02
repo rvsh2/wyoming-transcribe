@@ -110,6 +110,8 @@ are open.
 | `GET /pending` | unrecognized clips, grouped by voice |
 | `GET /pending/{id}/audio` / `DELETE /pending/{id}` | listen to / discard a clip |
 | `POST /speakers/{name}/samples/from-utterance/{id}` | claim a clip (+its voice group) as samples — the LLM enrollment tool |
+| `GET /history?limit=50` | recognition log: recent transcriptions with who/score/role or `utterance_id` |
+| `GET /export` / `POST /import` | download / restore a tar.gz backup of people, samples, roles and settings |
 
 ## Requirements
 
@@ -224,8 +226,23 @@ Typical setup:
 
 This repo ships a Home Assistant custom integration (`custom_components/wyoming_transcribe`)
 that embeds the enrollment/management UI as a **sidebar panel** in HA and adds status
-sensors (model status, enrolled speakers, pending unrecognized voices — handy for an
-automation like "notify me when a new unknown voice is waiting").
+sensors (model status, enrolled speakers, pending unrecognized voices).
+
+The integration also gives automations and LLM tools native HA hooks:
+
+- **Event `wyoming_transcribe_new_pending`** — fired when a new unrecognized voice
+  lands in the pending buffer (data: `utterance_id`, `text`, `seconds`, `created`).
+  Example automation: send an actionable notification "Nowy głos: *zgaś światło* —
+  kto to?" with buttons that call the claim service per household member.
+- **Service `wyoming_transcribe.claim_utterance`** (`name`, `utterance_id`,
+  `include_cluster` default true) — enrolls the pending clip (and its voice group)
+  as the person's samples; the person is created if missing. Expose this as an LLM
+  tool in your conversation agent and the "who are you?" flow needs no curl or
+  tokens in prompts.
+- **Service `wyoming_transcribe.set_role`** (`name`, `role`: admin/user/guest).
+
+Note: pending clips are polled every 60 s, so the event can lag up to a minute
+behind the utterance.
 
 Install:
 

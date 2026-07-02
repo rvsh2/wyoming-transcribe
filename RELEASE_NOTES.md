@@ -1,5 +1,35 @@
 # Release Notes
 
+## 2026-07-02 (v0.2.0)
+
+### Home Assistant: services + event for the "who are you?" flow
+
+- Integration services `wyoming_transcribe.claim_utterance` (name, utterance_id,
+  include_cluster) and `wyoming_transcribe.set_role` — automations and LLM tools can
+  enroll pending voices and manage roles natively, without curl/tokens in prompts.
+- Event `wyoming_transcribe_new_pending` fired when a new unrecognized voice lands in
+  the buffer (polled every 60 s); integration bumped to 0.2.0.
+
+### Recognition log ("Dziennik rozpoznań")
+
+- Every transcription appends who/score/role (or the pending `utterance_id`) to a
+  shared JSONL ring log (`HISTORY_MAX_ENTRIES`, default 200; `HISTORY_ENABLED`);
+  `GET /history` + a UI card with per-entry playback of still-pending clips. Makes
+  threshold tuning and misidentification review data-driven instead of guesswork.
+
+### Enrollment backup
+
+- `GET /export` downloads a tar.gz of people, samples, roles and settings (pending
+  buffer and the operational log are excluded); `POST /import` restores it with
+  archive-path validation. Both wired into the UI settings card. Live-verified:
+  delete person -> voice unknown; import -> recognition (0.85) returns.
+
+### Emotion spike (negative result)
+
+- The tokenizer has `<|emo:angry/happy/neutral/sad/undefined|>` tokens, but the
+  diarize fine-tune predicts `emo:undefined` with p=1.0 regardless of input — the
+  capability is dead in this checkpoint, so no `emotion` field was added.
+
 ## 2026-07-02
 
 ### QA review fixes (10 findings, multi-agent review)

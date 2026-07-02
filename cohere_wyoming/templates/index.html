@@ -265,6 +265,17 @@
     </div>
 
     <div class="card">
+        <h2>Dziennik rozpoznań</h2>
+        <p class="hint">Ostatnie transkrypcje z decyzją identyfikacji (kto + pewność). Pozwala
+            ocenić, czy progi rozpoznawania są dobrze dobrane, i wychwycić pomyłki.</p>
+        <div id="history-status" class="hint"></div>
+        <div id="history-list"></div>
+        <div class="button-row" style="margin-top: 0.5rem;">
+            <button id="history-refresh" class="button-secondary btn-small" type="button">Odśwież</button>
+        </div>
+    </div>
+
+    <div class="card">
         <h2>Ustawienia</h2>
         <div class="form-row">
             <label for="speaker-text-mode">Przekazywanie tożsamości mówcy</label>
@@ -279,6 +290,18 @@
                 <button id="save-settings-button" type="button">Zapisz ustawienia</button>
             </div>
             <div id="settings-status" class="hint"></div>
+        </div>
+        <div class="form-row">
+            <label>Kopia zapasowa głosów</label>
+            <div class="button-row">
+                <button id="export-button" class="button-secondary" type="button">Pobierz kopię (tar.gz)</button>
+                <label class="button button-secondary">Przywróć z kopii
+                    <input id="import-file" type="file" accept=".tar.gz,.tgz,application/gzip" style="display: none;">
+                </label>
+            </div>
+            <div class="hint">Kopia obejmuje osoby, próbki głosu, role i ustawienia
+                (bez bufora nierozpoznanych i dziennika). Przywrócenie nadpisuje istniejące pliki.</div>
+            <div id="backup-status" class="hint"></div>
         </div>
         <div class="form-row">
             <label for="api-token">API token</label>
@@ -898,6 +921,7 @@ async function claimUtterance(name, utteranceId, includeCluster) {
     }
     await loadPending();
     await loadSpeakers();
+    await loadHistory();
 }
 
 function renderPendingCluster(cluster) {
@@ -976,11 +1000,104 @@ function renderPendingCluster(cluster) {
     return card;
 }
 
+const historyList = document.getElementById("history-list");
+const historyStatus = document.getElementById("history-status");
+
+async function loadHistory() {
+    try {
+        const data = await apiRequest("/history?limit=50");
+        renderHistory(data.entries || []);
+    } catch (error) {
+        historyStatus.textContent = `Błąd wczytywania: ${error.message}`;
+    }
+}
+
+function renderHistory(entries) {
+    historyList.innerHTML = "";
+    if (!entries.length) {
+        historyStatus.textContent = "Brak wpisów — dziennik wypełnia się z każdą transkrypcją.";
+        return;
+    }
+    const recognized = entries.filter((e) => e.speaker).length;
+    historyStatus.textContent =
+        `${entries.length} ostatnich transkrypcji · rozpoznane: ${recognized} · nieznane: ${entries.length - recognized}`;
+
+    for (const entry of entries) {
+        const row = document.createElement("div");
+        row.className = "sample-row";
+
+        const meta = document.createElement("span");
+        meta.className = "sample-meta";
+        const when = entry.ts ? new Date(entry.ts * 1000).toLocaleString() : "";
+        let who = "nieznany";
+        if (entry.speaker) {
+            const score = entry.score != null ? ` (${entry.score.toFixed(2)})` : "";
+            const role = entry.role ? ` · ${entry.role}` : "";
+            who = `${entry.speaker}${score}${role}`;
+        }
+        meta.textContent = `${when} · ${who} · „${entry.text || ""}”`;
+
+        const spacer = document.createElement("div");
+        spacer.className = "spacer";
+
+        row.appendChild(meta);
+        row.appendChild(spacer);
+        if (entry.utterance_id) {
+            // Clip may already be claimed/pruned; the player reports an error then.
+            row.appendChild(renderAudioPlayer(`/pending/${encodeURIComponent(entry.utterance_id)}/audio`));
+        }
+        historyList.appendChild(row);
+    }
+}
+
+document.getElementById("history-refresh").addEventListener("click", loadHistory);
+
+const exportButton = document.getElementById("export-button");
+const importFile = document.getElementById("import-file");
+const backupStatus = document.getElementById("backup-status");
+
+exportButton.addEventListener("click", async () => {
+    backupStatus.textContent = "Przygotowywanie kopii...";
+    try {
+        const response = await fetch("/export", { headers: authHeaders() });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const blob = await response.blob();
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = "speakers-backup.tar.gz";
+        link.click();
+        URL.revokeObjectURL(link.href);
+        backupStatus.textContent = "Kopia pobrana.";
+    } catch (error) {
+        backupStatus.textContent = `Błąd eksportu: ${error.message}`;
+    }
+});
+
+importFile.addEventListener("change", async () => {
+    if (!importFile.files.length) return;
+    if (!confirm("Przywrócić kopię? Istniejące pliki o tych samych nazwach zostaną nadpisane.")) {
+        importFile.value = "";
+        return;
+    }
+    const form = new FormData();
+    form.append("file", importFile.files[0]);
+    try {
+        const result = await apiRequest("/import", { method: "POST", body: form });
+        backupStatus.textContent = `Przywrócono ${result.files} plików.`;
+        await loadSpeakers();
+        await loadPending();
+        await loadHistory();
+    } catch (error) {
+        backupStatus.textContent = `Błąd importu: ${error.message}`;
+    }
+    importFile.value = "";
+});
+
 addSpeakerButton.addEventListener("click", addSpeaker);
 newSpeakerName.addEventListener("keydown", (event) => {
     if (event.key === "Enter") { event.preventDefault(); addSpeaker(); }
 });
-loadSpeakers().then(loadPending);
+loadSpeakers().then(loadPending).then(loadHistory);
 
 const speakerTextMode = document.getElementById("speaker-text-mode");
 const saveSettingsButton = document.getElementById("save-settings-button");

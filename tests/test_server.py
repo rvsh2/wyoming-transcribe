@@ -328,6 +328,72 @@ class CohereTranscribeApiTests(unittest.TestCase):
                 self.assertEqual(payload["count"], 1)
                 self.assertEqual(payload["clusters"][0]["clips"][0]["id"], id_c)
 
+    def test_export_import_roundtrip(self):
+        import tarfile
+        import tempfile
+        from pathlib import Path
+
+        from cohere_wyoming.enrollment import EnrollmentStore
+
+        with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
+            store = EnrollmentStore(source_dir)
+            store.create_speaker("Krzysztof")
+            store.set_role("Krzysztof", "admin")
+            (Path(source_dir) / "Krzysztof" / "sample-1.wav").write_bytes(b"RIFFfake")
+            (Path(source_dir) / ".pending").mkdir()
+            (Path(source_dir) / ".pending" / "utt-1-aabbccdd.wav").write_bytes(b"x")
+            (Path(source_dir) / ".history.jsonl").write_text("{}\n")
+
+            with patch.object(server.service.speaker_registry, "enrollment_dir", Path(source_dir)):
+                response = self.run_async(server.export_enrollment())
+            archive = bytes(response.body)
+            names = tarfile.open(fileobj=io.BytesIO(archive)).getnames()
+            self.assertIn("Krzysztof/sample-1.wav", names)
+            self.assertIn("Krzysztof/.meta.json", names)
+            # Transient pending clips and the operational log stay out of backups
+            # (restoring an old history over a newer one would lose entries).
+            self.assertFalse(any(name.startswith(".pending") for name in names))
+            self.assertNotIn(".history.jsonl", names)
+
+            with patch.object(server.service.speaker_registry, "enrollment_dir", Path(target_dir)):
+                result = self.run_async(server.import_enrollment(make_upload_file(archive, "backup.tar.gz")))
+            self.assertEqual(self.decode_json_response(result)["status"], "ok")
+            restored = EnrollmentStore(target_dir).list_speakers()
+            self.assertEqual(restored[0]["name"], "Krzysztof")
+            self.assertEqual(restored[0]["role"], "admin")
+            self.assertEqual(len(restored[0]["samples"]), 1)
+
+    def test_import_rejects_unsafe_archive(self):
+        import tarfile
+        import tempfile
+        from pathlib import Path
+
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+            payload = io.BytesIO(b"evil")
+            info = tarfile.TarInfo("../../evil.txt")
+            info.size = 4
+            archive.addfile(info, payload)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(server.service.speaker_registry, "enrollment_dir", Path(tmp)):
+                with self.assertRaises(HTTPException) as ctx:
+                    self.run_async(server.import_enrollment(make_upload_file(buffer.getvalue(), "backup.tar.gz")))
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_history_endpoint_returns_entries(self):
+        import tempfile
+        from pathlib import Path
+
+        from cohere_wyoming.history import RecognitionLog
+
+        with tempfile.TemporaryDirectory() as tmp:
+            RecognitionLog(tmp).append(text="zgaś światło", language="pl", duration=2.0, speaker="Krzysztof")
+            with patch.object(server.service.speaker_registry, "enrollment_dir", Path(tmp)):
+                payload = self.decode_json_response(self.run_async(server.recognition_history(limit=10)))
+        self.assertEqual(len(payload["entries"]), 1)
+        self.assertEqual(payload["entries"][0]["speaker"], "Krzysztof")
+
     def test_openai_endpoint_returns_verbose_json(self):
         mocked_result = SimpleNamespace(
             asdict=lambda: {

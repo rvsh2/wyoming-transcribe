@@ -8,9 +8,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import html
+import io
 import logging
 import os
 import secrets
+import tarfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -19,10 +21,17 @@ import numpy as np
 import torch
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    Response,
+)
 
 from cohere_wyoming.audio import is_effectively_silent, read_audio_to_numpy
 from cohere_wyoming.enrollment import SPEAKER_ROLES, EnrollmentError, EnrollmentStore
+from cohere_wyoming.history import RecognitionLog
 from cohere_wyoming.pending import PendingError, PendingStore
 from cohere_wyoming.transcriber import (
     CohereTranscriber,
@@ -482,6 +491,85 @@ def enrollment_store() -> EnrollmentStore:
 
 def pending_store() -> PendingStore:
     return PendingStore.from_env(service.speaker_registry.enrollment_dir)
+
+
+@app.get("/history")
+async def recognition_history(limit: int = 50):
+    """Recent transcription decisions (who was recognized, or utterance_id)."""
+    log = RecognitionLog.from_env(service.speaker_registry.enrollment_dir)
+    entries = log.recent(limit=max(1, min(limit, 500))) if log is not None else []
+    return JSONResponse({"entries": entries})
+
+
+# Transient/operational files that do not belong in an enrollment backup:
+# pending clips are a ring buffer, and restoring an old recognition log would
+# overwrite a newer one.
+_EXPORT_EXCLUDED = (".pending", ".history.jsonl", ".history.jsonl.tmp")
+
+
+def _build_export_archive() -> bytes:
+    """tar.gz of the enrollment dir (samples, roles, settings)."""
+    root = Path(service.speaker_registry.enrollment_dir)
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        if root.is_dir():
+            for path in sorted(root.rglob("*")):
+                relative = path.relative_to(root)
+                if relative.parts and relative.parts[0] in _EXPORT_EXCLUDED:
+                    continue
+                if path.is_file():
+                    archive.add(str(path), arcname=str(relative))
+    return buffer.getvalue()
+
+
+def _restore_export_archive(data: bytes) -> int:
+    """Extract a backup into the enrollment dir; rejects unsafe paths."""
+    root = Path(service.speaker_registry.enrollment_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    restored = 0
+    try:
+        archive = tarfile.open(fileobj=io.BytesIO(data), mode="r:gz")
+    except tarfile.TarError as error:
+        raise ValueError(f"Not a valid backup archive: {error}") from error
+    with archive:
+        for member in archive.getmembers():
+            if not member.isfile():
+                continue  # directories are created below; links are ignored
+            relative = Path(member.name)
+            if relative.is_absolute() or ".." in relative.parts:
+                raise ValueError(f"Unsafe path in archive: {member.name}")
+            source = archive.extractfile(member)
+            if source is None:
+                continue
+            target = root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(source.read())
+            restored += 1
+    if restored == 0:
+        raise ValueError("Archive contains no files")
+    return restored
+
+
+@app.get("/export")
+async def export_enrollment():
+    data = await asyncio.to_thread(_build_export_archive)
+    return Response(
+        content=data,
+        media_type="application/gzip",
+        headers={"Content-Disposition": 'attachment; filename="speakers-backup.tar.gz"'},
+    )
+
+
+@app.post("/import")
+async def import_enrollment(file: UploadFile = File(...)):
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty archive upload")
+    try:
+        restored = await asyncio.to_thread(_restore_export_archive, data)
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail=str(err)) from err
+    return JSONResponse({"status": "ok", "files": restored})
 
 
 def public_clip(clip: dict) -> dict:

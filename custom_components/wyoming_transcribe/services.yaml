@@ -1,0 +1,45 @@
+claim_utterance:
+  name: Claim utterance
+  description: >-
+    Enroll a pending (unrecognized) utterance as a voice sample of a person.
+    The person is created automatically if missing. This is the tool for the
+    LLM "who are you?" flow — pass the utterance_id from the Transcript event.
+  fields:
+    name:
+      name: Person name
+      required: true
+      example: "Krzysztof"
+      selector:
+        text:
+    utterance_id:
+      name: Utterance id
+      required: true
+      example: "utt-1783019986769-0f99505f"
+      selector:
+        text:
+    include_cluster:
+      name: Include voice cluster
+      description: Also claim all other pending clips of the same voice (recommended).
+      default: true
+      selector:
+        boolean:
+
+set_role:
+  name: Set speaker role
+  description: Set the authorization role of an enrolled person (admin/user/guest).
+  fields:
+    name:
+      name: Person name
+      required: true
+      example: "Krzysztof"
+      selector:
+        text:
+    role:
+      name: Role
+      required: true
+      selector:
+        select:
+          options:
+            - admin
+            - user
+            - guest

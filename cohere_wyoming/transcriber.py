@@ -16,6 +16,7 @@ from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
 
 from .audio import is_effectively_silent, read_audio_to_numpy
 from .enrollment import read_role
+from .history import RecognitionLog
 from .pending import PendingStore
 from .settings import DEFAULT_SPEAKER_TEXT_MODE, SettingsStore
 from .speaker_id import SpeakerRegistry
@@ -254,6 +255,9 @@ class CohereTranscriber:
             self.pending_store = PendingStore.from_env(speaker_registry.enrollment_dir)
         else:
             self.pending_store = None
+        self.recognition_log = RecognitionLog.from_env(
+            speaker_registry.enrollment_dir if speaker_registry is not None else None
+        )
         self.speaker_chain_threshold = float(
             os.environ.get("SPEAKER_CHAIN_THRESHOLD", DEFAULT_CHAIN_THRESHOLD)
         )
@@ -496,6 +500,17 @@ class CohereTranscriber:
             speaker_role = read_role(self.speaker_registry.enrollment_dir, dominant_name)
         elif text.strip():
             utterance_id = self._save_pending_utterance(segments, audio_data, sample_rate, text)
+
+        if self.recognition_log is not None and text.strip():
+            self.recognition_log.append(
+                text=text,
+                language=resolved_language,
+                duration=round(duration_s, 2),
+                speaker=dominant_name,
+                score=dominant_score,
+                role=speaker_role,
+                utterance_id=utterance_id,
+            )
 
         elapsed = time.time() - start_time
         rtfx = duration_s / elapsed if elapsed > 0 else 0
