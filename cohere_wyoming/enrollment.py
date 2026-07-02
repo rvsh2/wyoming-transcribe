@@ -38,6 +38,15 @@ def read_role(enrollment_dir: str | Path, name: str) -> str:
         return DEFAULT_ROLE
 
 
+def read_adapted_count(enrollment_dir: str | Path, name: str) -> int:
+    """How many confident recognitions fed this person's adaptive voiceprint."""
+    try:
+        adapt_path = Path(enrollment_dir) / safe_person(name) / ".adapt.json"
+        return int(json.loads(adapt_path.read_text(encoding="utf-8")).get("count", 0))
+    except Exception:
+        return 0
+
+
 class EnrollmentError(ValueError):
     """Raised for invalid speaker names, sample ids, or unreadable audio."""
 
@@ -81,6 +90,7 @@ class EnrollmentStore:
                 {
                     "name": person_dir.name,
                     "role": read_role(self.root, person_dir.name),
+                    "adapted": read_adapted_count(self.root, person_dir.name),
                     "samples": self._list_samples(person_dir),
                 }
             )

@@ -30,6 +30,17 @@ LOGGER = logging.getLogger("cohere-wyoming.speaker_id")
 DEFAULT_MODEL = "speechbrain/spkrec-ecapa-voxceleb"
 DEFAULT_THRESHOLD = 0.35
 TARGET_SR = 16000
+
+# --- profile adaptation from confident recognitions -------------------------
+# A recognition with score >= this adds the utterance's embedding to the
+# person's adaptive voiceprint, so profiles track microphones/voice drift.
+DEFAULT_ADAPT_MIN_SCORE = 0.60
+# Skip adaptation when another profile scores within this margin of the best
+# match — an ambiguous embedding must not poison either profile.
+ADAPT_MARGIN = 0.10
+# Running-mean cap: adaptation stays responsive instead of freezing over time.
+ADAPT_COUNT_CAP = 50
+ADAPT_FILENAME = ".adapt.json"
 # Segments shorter than this are too short for a reliable voiceprint.
 MIN_MATCH_SAMPLES = int(0.4 * TARGET_SR)
 # ECAPA gains nothing from very long clips; cap to bound batch padding/memory
@@ -58,6 +69,8 @@ class SpeakerRegistry:
         device: Optional[str] = None,
         enabled: bool = True,
         model_cache_dir: Optional[str] = None,
+        adapt_enabled: bool = True,
+        adapt_min_score: float = DEFAULT_ADAPT_MIN_SCORE,
     ) -> None:
         self.enrollment_dir = Path(enrollment_dir)
         self.model_name = model_name
@@ -65,10 +78,14 @@ class SpeakerRegistry:
         self.prefer_device = device
         self.enabled = enabled
         self.model_cache_dir = model_cache_dir
+        self.adapt_enabled = adapt_enabled
+        self.adapt_min_score = adapt_min_score
 
         self._encoder = None
         self._device: Optional[str] = None
         self._profiles: dict[str, np.ndarray] = {}
+        # person -> (running-mean adaptation vector, count); see adapt().
+        self._adapt: dict[str, tuple[np.ndarray, int]] = {}
         self._file_cache: dict[str, dict] = {}
         self._signature: Optional[tuple] = None
         self._lock = threading.Lock()
@@ -86,6 +103,11 @@ class SpeakerRegistry:
             "threshold": float(os.environ.get("SPEAKER_MATCH_THRESHOLD", DEFAULT_THRESHOLD)),
             "device": device,
             "model_cache_dir": os.environ.get("SPEAKER_MODEL_CACHE") or None,
+            "adapt_enabled": os.environ.get("SPEAKER_ADAPT_ENABLED", "true").strip().lower()
+            not in {"0", "false", "no", "off"},
+            "adapt_min_score": float(
+                os.environ.get("SPEAKER_ADAPT_MIN_SCORE", DEFAULT_ADAPT_MIN_SCORE)
+            ),
         }
         params.update(overrides)
         enrollment_dir = os.environ.get("SPEAKER_ENROLLMENT_DIR", "speakers")
@@ -263,14 +285,46 @@ class SpeakerRegistry:
             self._file_cache = {k: v for k, v in self._file_cache.items() if k in valid_keys}
 
             self._profiles = profiles
+            self._adapt = self._load_adaptation(profiles)
             self._signature = signature
             self._save_disk_cache()
             LOGGER.info("Loaded %d speaker profile(s): %s", len(profiles), ", ".join(sorted(profiles)))
             return True
 
+    def _adapt_path(self, name: str) -> Path:
+        return self.enrollment_dir / name / ADAPT_FILENAME
+
+    def _load_adaptation(self, profiles: dict[str, np.ndarray]) -> dict[str, tuple[np.ndarray, int]]:
+        adapt: dict[str, tuple[np.ndarray, int]] = {}
+        for name in profiles:
+            path = self._adapt_path(name)
+            if not path.is_file():
+                continue
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                vector = np.asarray(data["vector"], dtype=np.float32)
+                adapt[name] = (vector, int(data.get("count", 1)))
+            except Exception as error:
+                LOGGER.warning("Unreadable adaptation file %s: %s", path, error)
+        return adapt
+
     # ------------------------------------------------------------- inference
     def has_profiles(self) -> bool:
         return bool(self._profiles)
+
+    def _effective_profile(self, name: str) -> np.ndarray:
+        """Enrolled-sample mean blended 1:1 with the adaptive usage voiceprint.
+
+        The enrolled mean never changes, so adaptation cannot fully replace a
+        profile — it can only pull it halfway toward real usage conditions.
+        """
+        profile = self._profiles[name]
+        adapt = self._adapt.get(name)
+        if adapt is None:
+            return profile
+        combined = profile + adapt[0]
+        norm = float(np.linalg.norm(combined))
+        return combined / norm if norm > 0.0 else profile
 
     def _match_embedding(self, embedding: Optional[np.ndarray]) -> SpeakerMatch:
         if embedding is None or not self._profiles:
@@ -278,14 +332,72 @@ class SpeakerRegistry:
 
         best_name: Optional[str] = None
         best_score = -1.0
-        for name, profile in self._profiles.items():
-            score = float(np.dot(embedding, profile))
+        for name in self._profiles:
+            score = float(np.dot(embedding, self._effective_profile(name)))
             if score > best_score:
                 best_name, best_score = name, score
 
         if best_score >= self.threshold:
             return SpeakerMatch(best_name, round(best_score, 3))
         return SpeakerMatch(None, round(best_score, 3))
+
+    def match_embedding(self, embedding: Optional[np.ndarray]) -> SpeakerMatch:
+        """Match a precomputed embedding against enrolled profiles."""
+        if not self.enabled or not self._profiles:
+            return SpeakerMatch(None, 0.0)
+        return self._match_embedding(embedding)
+
+    def adapt(self, name: str, embedding: Optional[np.ndarray], score: float) -> bool:
+        """Fold a confidently recognized utterance into the person's voiceprint.
+
+        Guards: adaptation must be enabled, the score must clear
+        adapt_min_score, and no other profile may score within ADAPT_MARGIN of
+        the match (an ambiguous embedding must not poison either profile).
+        Returns True when the profile was updated. Never raises.
+        """
+        if (
+            not self.adapt_enabled
+            or embedding is None
+            or score < self.adapt_min_score
+            or name not in self._profiles
+        ):
+            return False
+
+        try:
+            with self._lock:
+                for other in self._profiles:
+                    if other == name:
+                        continue
+                    other_score = float(np.dot(embedding, self._effective_profile(other)))
+                    if other_score >= score - ADAPT_MARGIN:
+                        LOGGER.debug(
+                            "Skipping adaptation for %s: ambiguous vs %s (%.3f vs %.3f)",
+                            name,
+                            other,
+                            score,
+                            other_score,
+                        )
+                        return False
+
+                vector, count = self._adapt.get(name, (np.zeros_like(embedding), 0))
+                effective_count = min(count, ADAPT_COUNT_CAP)
+                updated = (vector * effective_count + embedding) / (effective_count + 1)
+                norm = float(np.linalg.norm(updated))
+                if norm == 0.0:
+                    return False
+                updated = updated / norm
+                self._adapt[name] = (updated, count + 1)
+                self._adapt_path(name).write_text(
+                    json.dumps({"vector": updated.tolist(), "count": count + 1}),
+                    encoding="utf-8",
+                )
+            LOGGER.info(
+                "Adapted voiceprint of %s (utterance #%d, score %.3f)", name, count + 1, score
+            )
+            return True
+        except Exception as error:
+            LOGGER.warning("Voiceprint adaptation for %s failed: %s", name, error)
+            return False
 
     def identify(self, audio: np.ndarray) -> SpeakerMatch:
         """Identify one audio segment against enrolled profiles."""
@@ -306,4 +418,9 @@ class SpeakerRegistry:
             "threshold": self.threshold,
             "enrollment_dir": str(self.enrollment_dir),
             "speakers": sorted(self._profiles),
+            "adaptation": {
+                "enabled": self.adapt_enabled,
+                "min_score": self.adapt_min_score,
+                "counts": {name: count for name, (_v, count) in self._adapt.items()},
+            },
         }

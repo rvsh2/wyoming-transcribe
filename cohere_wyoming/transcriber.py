@@ -845,7 +845,8 @@ class CohereTranscriber:
             clips.append(np.concatenate(parts) if parts else None)
 
         try:
-            matches = registry.identify_batch(clips)
+            embeddings = registry.embed_batch(clips)
+            matches = [registry.match_embedding(embedding) for embedding in embeddings]
         except Exception as error:
             LOGGER.warning("Speaker identification failed: %s", error)
             return
@@ -860,6 +861,12 @@ class CohereTranscriber:
             if match is not None:
                 segment["name"] = match.name
                 segment["score"] = match.score
+
+        # Confident recognitions feed the person's adaptive voiceprint, so
+        # profiles track real usage conditions (mics, rooms, voice drift).
+        for speaker_id, match, embedding in zip(speaker_ids, matches, embeddings):
+            if match.name and embedding is not None:
+                registry.adapt(match.name, embedding, match.score)
 
     @staticmethod
     def _dominant_speaker_index(segments: list[dict]) -> Optional[int]:

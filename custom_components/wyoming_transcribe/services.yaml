@@ -55,6 +55,42 @@ claim_latest:
           max: 3600
           unit_of_measurement: s
 
+check_latest_voice:
+  name: Check latest unrecognized voice
+  description: >-
+    Regular-visitor check for the "who are you?" flow. Returns stats of the
+    newest unrecognized voice's cluster (utterances, seconds, age) and a
+    should_ask verdict — ask for a name only when the voice has talked to the
+    system a few times. Call before asking; claim with claim_latest after the
+    person introduces themselves.
+  fields:
+    min_utterances:
+      name: Minimum utterances
+      description: Ask only when this voice has at least this many buffered utterances.
+      default: 3
+      selector:
+        number:
+          min: 1
+          max: 20
+    min_seconds:
+      name: Minimum total speech (seconds)
+      description: Ask only when the voice's buffered clips total at least this much speech.
+      default: 8
+      selector:
+        number:
+          min: 1
+          max: 120
+          unit_of_measurement: s
+    max_age_seconds:
+      name: Maximum anchor age (seconds)
+      description: Treat the voice as current only if its newest clip is younger than this.
+      default: 300
+      selector:
+        number:
+          min: 10
+          max: 3600
+          unit_of_measurement: s
+
 set_role:
   name: Set speaker role
   description: Set the authorization role of an enrolled person (admin/user/guest).

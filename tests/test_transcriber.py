@@ -354,9 +354,17 @@ class SpeakerTextAndIdentificationTests(unittest.TestCase):
             def has_profiles(self):
                 return True
 
-            def identify_batch(self, clips):
+            def embed_batch(self, clips):
                 received_clips.extend(clips)
-                return [SpeakerMatch("Krzysztof", 0.8), SpeakerMatch(None, 0.1)]
+                return [np.array([1.0, 0.0], dtype=np.float32), None]
+
+            def match_embedding(self, embedding):
+                if embedding is None:
+                    return SpeakerMatch(None, 0.1)
+                return SpeakerMatch("Krzysztof", 0.8)
+
+            def adapt(self, name, embedding, score):
+                return False
 
         transcriber.speaker_registry = FakeRegistry()
         # Two sub-0.4s segments for speaker 0 (individually too short for a

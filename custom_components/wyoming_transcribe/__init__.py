@@ -20,7 +20,7 @@ from aiohttp import web
 from homeassistant.components import frontend
 from homeassistant.components.http import HomeAssistantView, StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError, Unauthorized
 from homeassistant.helpers import aiohttp_client
 from homeassistant.helpers import config_validation as cv
@@ -50,6 +50,7 @@ EVENT_NEW_PENDING = f"{DOMAIN}_new_pending"
 
 SERVICE_CLAIM_UTTERANCE = "claim_utterance"
 SERVICE_CLAIM_LATEST = "claim_latest"
+SERVICE_CHECK_LATEST_VOICE = "check_latest_voice"
 SERVICE_SET_ROLE = "set_role"
 
 CLAIM_UTTERANCE_SCHEMA = vol.Schema(
@@ -63,6 +64,13 @@ CLAIM_LATEST_SCHEMA = vol.Schema(
     {
         vol.Required("name"): cv.string,
         vol.Optional("include_cluster", default=True): cv.boolean,
+        vol.Optional("max_age_seconds", default=300): vol.Coerce(float),
+    }
+)
+CHECK_LATEST_VOICE_SCHEMA = vol.Schema(
+    {
+        vol.Optional("min_utterances", default=3): vol.Coerce(int),
+        vol.Optional("min_seconds", default=8): vol.Coerce(float),
         vol.Optional("max_age_seconds", default=300): vol.Coerce(float),
     }
 )
@@ -197,6 +205,53 @@ def _async_register_services(hass: HomeAssistant) -> None:
             },
         )
 
+    async def handle_check_latest_voice(call: ServiceCall) -> dict:
+        """Regular-visitor check for the LLM "who are you?" flow.
+
+        Returns stats of the newest unrecognized voice's cluster plus a ready
+        should_ask verdict, so the agent only interrogates voices that have
+        actually talked to the system a few times.
+        """
+        runtime = _first_runtime(hass)
+        silent = {
+            "should_ask": False,
+            "utterances": 0,
+            "seconds": 0.0,
+            "newest_age_seconds": None,
+            "reason": "no_pending_voice",
+        }
+        try:
+            async with runtime["session"].get(
+                f"{runtime['base']}/pending/latest-voice",
+                headers=runtime["headers"],
+                timeout=REQUEST_TIMEOUT,
+            ) as response:
+                if response.status == 404:
+                    return silent
+                if response.status >= 400:
+                    raise HomeAssistantError(
+                        f"latest-voice check failed: HTTP {response.status}"
+                    )
+                stats = await response.json()
+        except HomeAssistantError:
+            raise
+        except Exception as error:
+            raise HomeAssistantError(f"latest-voice check failed: {error}") from error
+
+        fresh = stats["newest_age_seconds"] <= call.data["max_age_seconds"]
+        regular = (
+            stats["utterances"] >= call.data["min_utterances"]
+            and stats["seconds"] >= call.data["min_seconds"]
+        )
+        reason = "ok" if (fresh and regular) else ("stale" if not fresh else "not_a_regular_yet")
+        return {
+            "should_ask": fresh and regular,
+            "utterances": stats["utterances"],
+            "seconds": stats["seconds"],
+            "newest_age_seconds": stats["newest_age_seconds"],
+            "reason": reason,
+        }
+
     async def handle_set_role(call: ServiceCall) -> None:
         runtime = _first_runtime(hass)
         name = quote(call.data["name"], safe="")
@@ -207,6 +262,13 @@ def _async_register_services(hass: HomeAssistant) -> None:
     )
     hass.services.async_register(
         DOMAIN, SERVICE_CLAIM_LATEST, handle_claim_latest, schema=CLAIM_LATEST_SCHEMA
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_CHECK_LATEST_VOICE,
+        handle_check_latest_voice,
+        schema=CHECK_LATEST_VOICE_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
     )
     hass.services.async_register(
         DOMAIN, SERVICE_SET_ROLE, handle_set_role, schema=SET_ROLE_SCHEMA
@@ -247,11 +309,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.debug("Could not fetch %s: %s", path, error)
 
         if data["pending"] is not None:
-            clips = [
-                clip
-                for cluster in data["pending"].get("clusters", [])
+            clusters = data["pending"].get("clusters", [])
+            clips = [clip for cluster in clusters for clip in cluster.get("clips", [])]
+            cluster_size = {
+                clip["id"]: len(cluster.get("clips", []))
+                for cluster in clusters
                 for clip in cluster.get("clips", [])
-            ]
+            }
             current_ids = {clip["id"] for clip in clips}
             if known_pending_ids is not None:
                 for clip in clips:
@@ -263,6 +327,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                 "text": clip.get("text"),
                                 "seconds": clip.get("seconds"),
                                 "created": clip.get("created"),
+                                # Size of this voice's cluster: 1 = one-off
+                                # visitor, more = a regular worth identifying.
+                                "voice_utterances": cluster_size.get(clip["id"], 1),
                             },
                         )
             known_pending_ids = current_ids
@@ -331,7 +398,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN].pop(entry.entry_id, None)
         if not hass.data[DOMAIN]:
             frontend.async_remove_panel(hass, PANEL_URL_PATH)
-            for service in (SERVICE_CLAIM_UTTERANCE, SERVICE_CLAIM_LATEST, SERVICE_SET_ROLE):
+            for service in (
+                SERVICE_CLAIM_UTTERANCE,
+                SERVICE_CLAIM_LATEST,
+                SERVICE_CHECK_LATEST_VOICE,
+                SERVICE_SET_ROLE,
+            ):
                 if hass.services.has_service(DOMAIN, service):
                     hass.services.async_remove(DOMAIN, service)
     return unload_ok

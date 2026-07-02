@@ -53,6 +53,70 @@ class IdentifyTests(unittest.TestCase):
         self.assertIsNone(reg.identify(np.ones(10, dtype=np.float32)).name)
 
 
+class AdaptationTests(unittest.TestCase):
+    def _registry(self, tmp: str, **kwargs) -> SpeakerRegistry:
+        reg = SpeakerRegistry(tmp, **kwargs)
+        (Path(tmp) / "alice").mkdir(exist_ok=True)
+        (Path(tmp) / "bob").mkdir(exist_ok=True)
+        reg._profiles = {"alice": unit([1, 0, 0]), "bob": unit([0, 1, 0])}
+        return reg
+
+    def test_confident_recognition_adapts_profile(self):
+        with TemporaryDirectory() as tmp:
+            reg = self._registry(tmp)
+            embedding = unit([0.8, 0.0, 0.6])  # alice-ish, far from bob
+
+            self.assertTrue(reg.adapt("alice", embedding, score=0.8))
+            self.assertIn("alice", reg._adapt)
+            self.assertEqual(reg._adapt["alice"][1], 1)
+            # Persisted next to the person's samples (included in backups).
+            self.assertTrue((Path(tmp) / "alice" / ".adapt.json").is_file())
+
+            # The effective profile moved toward usage conditions...
+            effective = reg._effective_profile("alice")
+            self.assertGreater(float(np.dot(effective, embedding)), float(np.dot(reg._profiles["alice"], embedding)))
+            # ...but the enrolled anchor is untouched.
+            np.testing.assert_allclose(reg._profiles["alice"], unit([1, 0, 0]))
+
+    def test_low_score_and_disabled_do_not_adapt(self):
+        with TemporaryDirectory() as tmp:
+            reg = self._registry(tmp)
+            self.assertFalse(reg.adapt("alice", unit([1, 0, 0]), score=0.5))  # < 0.6
+            reg_off = self._registry(tmp, adapt_enabled=False)
+            self.assertFalse(reg_off.adapt("alice", unit([1, 0, 0]), score=0.9))
+            self.assertFalse(reg.adapt("ghost", unit([1, 0, 0]), score=0.9))
+            self.assertFalse(reg.adapt("alice", None, score=0.9))
+
+    def test_ambiguous_embedding_is_rejected(self):
+        with TemporaryDirectory() as tmp:
+            reg = self._registry(tmp)
+            # Equidistant from alice and bob -> within the safety margin.
+            ambiguous = unit([1, 1, 0])
+            score = float(np.dot(ambiguous, reg._profiles["alice"]))
+            self.assertFalse(reg.adapt("alice", ambiguous, score=score))
+            self.assertNotIn("alice", reg._adapt)
+
+    def test_adaptation_survives_reload(self):
+        with TemporaryDirectory() as tmp:
+            reg = self._registry(tmp)
+            reg.adapt("alice", unit([0.8, 0.0, 0.6]), score=0.8)
+
+            fresh = SpeakerRegistry(tmp)
+            loaded = fresh._load_adaptation({"alice": unit([1, 0, 0])})
+            self.assertIn("alice", loaded)
+            self.assertEqual(loaded["alice"][1], 1)
+
+    def test_running_mean_accumulates(self):
+        with TemporaryDirectory() as tmp:
+            reg = self._registry(tmp)
+            reg.adapt("alice", unit([0.9, 0.0, 0.44]), score=0.9)
+            reg.adapt("alice", unit([0.9, 0.0, -0.44]), score=0.9)
+            vector, count = reg._adapt["alice"]
+            self.assertEqual(count, 2)
+            # Mean of the two leans toward their shared direction.
+            self.assertGreater(float(vector[0]), 0.9)
+
+
 class ReloadTests(unittest.TestCase):
     def test_builds_profiles_and_detects_changes(self):
         with TemporaryDirectory() as tmp:

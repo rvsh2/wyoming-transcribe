@@ -1,5 +1,34 @@
 # Release Notes
 
+## 2026-07-02 (v0.5.0)
+
+### Regular-visitor gating for the "who are you?" flow
+
+- `GET /pending/latest-voice`: cluster stats of the newest unrecognized clip
+  (utterances, total seconds, newest-clip age, transcript).
+- HA service `wyoming_transcribe.check_latest_voice` (supports response data):
+  returns the stats plus a ready `should_ask` verdict — the agent interrogates
+  only voices that talked to the system a few times (defaults: ≥3 utterances,
+  ≥8 s speech, newest clip ≤300 s). One-off visitors are left alone.
+- `wyoming_transcribe_new_pending` event now carries `voice_utterances`
+  (cluster size), so notification automations can also alert only on regulars.
+- README: two-script recipe (check + claim) and a system prompt with
+  anti-overzealousness rules (handle the command first, skip short utterances,
+  ask at most once per conversation).
+
+### Profile adaptation (fewer false negatives over time)
+
+- Confident recognitions (score ≥ `SPEAKER_ADAPT_MIN_SCORE`, default 0.60) feed
+  a per-person adaptive voiceprint (running mean capped at 50, stored in
+  `<person>/.adapt.json`, included in backups). Matching blends the enrolled
+  mean 1:1 with the adaptive vector: profiles track far-field mics, rooms and
+  voice drift, while the enrolled samples stay an immovable anchor.
+- Poisoning guards: ambiguous embeddings (another profile within 0.10 of the
+  best score) are never used; disable with `SPEAKER_ADAPT_ENABLED=false`;
+  deleting `<person>/.adapt.json` resets adaptation.
+- `GET /speakers` and the panel show the adaptation counter per person;
+  `/health` reports adaptation status.
+
 ## 2026-07-02 (v0.4.0)
 
 ### Voice-anchored "who are you?" enrollment for LLM agents

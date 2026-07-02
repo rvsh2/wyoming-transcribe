@@ -317,10 +317,13 @@ class WyomingTranscribePanel extends HTMLElement {
     const head = document.createElement("div");
     head.className = "speaker-head";
     const totalSeconds = speaker.samples.reduce((sum, s) => sum + (s.seconds || 0), 0);
+    const adapted = speaker.adapted
+      ? ` · adaptacja: ${speaker.adapted} rozpoznań`
+      : "";
     const title = document.createElement("div");
     title.innerHTML =
       `<span class="speaker-name">${this._escape(speaker.name)}</span>` +
-      `<div class="speaker-meta">${speaker.samples.length} próbek · ${totalSeconds.toFixed(1)} s łącznie</div>`;
+      `<div class="speaker-meta">${speaker.samples.length} próbek · ${totalSeconds.toFixed(1)} s łącznie${adapted}</div>`;
     head.appendChild(title);
 
     const actions = document.createElement("div");

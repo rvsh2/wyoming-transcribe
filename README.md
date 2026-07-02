@@ -368,6 +368,24 @@ Practical guidance:
 - Anonymous `Mówca N` labels are made consistent across 30 s windows by ECAPA voiceprint
   matching; enrollment naming is still the most reliable way to stabilize identity.
 
+### Profile adaptation (recognition improves with use)
+
+Every **confident** recognition (score ≥ `SPEAKER_ADAPT_MIN_SCORE`, default 0.60)
+folds the utterance's voiceprint into the person's adaptive vector (running mean,
+responsiveness capped at 50 utterances, stored in `<person>/.adapt.json`). Matching
+then uses the enrolled-sample mean blended **1:1** with the adaptive vector, so:
+
+- profiles track real usage conditions (far-field mics, rooms, voice drift, colds)
+  and false negatives shrink over time;
+- the enrolled samples remain an immovable anchor — adaptation can pull a profile
+  only halfway, and an ambiguous utterance (another profile within 0.10 of the
+  best score) is never used, so profiles cannot be poisoned or drift into each
+  other;
+- deleting the person (or their `.adapt.json`) resets adaptation; backups include it.
+
+Disable with `SPEAKER_ADAPT_ENABLED=false`. The speaker card in the panel shows how
+many recognitions have fed each profile ("adaptacja: N rozpoznań").
+
 ### Speaker identity for the HA pipeline
 
 How identity is delivered is configurable (`SPEAKER_TEXT_MODE`, or at runtime in the
@@ -409,37 +427,59 @@ Three ways to resolve a pending voice:
    `wyoming_transcribe.claim_latest` do (with a `max_age_seconds` guard, default
    300 s, refusing stale anchors).
 
-   Recipe for a Home Assistant LLM conversation agent:
+   To avoid interrogating every one-off visitor, the companion service
+   `wyoming_transcribe.check_latest_voice` (backed by `GET /pending/latest-voice`)
+   reports how much the *current unknown voice* has already talked to the system
+   (its cluster: utterance count, total seconds, age of the newest clip) and
+   returns a ready `should_ask` verdict — ask only "regulars" (defaults: ≥ 3
+   utterances, ≥ 8 s of speech, newest clip ≤ 300 s old).
 
-   - Create a script, expose it to Assist, and the agent can call it as a tool:
+   Recipe for a Home Assistant LLM conversation agent — two scripts exposed to
+   Assist as tools:
 
-     ```yaml
-     script:
-       przypisz_glos:
-         alias: "Przypisz nierozpoznany głos do osoby"
-         description: >-
-           Wywołaj po tym, jak nierozpoznana osoba przedstawi się z imienia.
-           Przypisuje jej głos (ostatnią wypowiedź i wszystkie nagrania tego
-           samego głosu) do podanego imienia.
-         fields:
-           name:
-             description: "Imię osoby, np. Anna"
-             required: true
-         sequence:
-           - service: wyoming_transcribe.claim_latest
-             data:
-               name: "{{ name }}"
-     ```
+   ```yaml
+   script:
+     sprawdz_nieznany_glos:
+       alias: "Sprawdź nierozpoznany głos"
+       description: >-
+         Wywołaj, gdy wypowiedź ma prefiks "Mówca N:". Zwraca should_ask —
+         czy warto zapytać tę osobę, kim jest (pyta tylko "bywalców", nie
+         jednorazowych gości).
+       sequence:
+         - service: wyoming_transcribe.check_latest_voice
+           response_variable: voice
+         - stop: ""
+           response_variable: voice
 
-   - Add to the agent's system prompt:
+     przypisz_glos:
+       alias: "Przypisz nierozpoznany głos do osoby"
+       description: >-
+         Wywołaj po tym, jak nierozpoznana osoba przedstawi się z imienia.
+         Przypisuje jej głos (ostatnią wypowiedź i wszystkie nagrania tego
+         samego głosu) do podanego imienia.
+       fields:
+         name:
+           description: "Imię osoby, np. Anna"
+           required: true
+       sequence:
+         - service: wyoming_transcribe.claim_latest
+           data:
+             name: "{{ name }}"
+   ```
 
-     ```text
-     Wypowiedzi mają prefiks z imieniem mówcy ("Krzysztof: ...") albo "Mówca N:",
-     gdy głos jest nierozpoznany. Gdy widzisz "Mówca N:", po obsłużeniu polecenia
-     zapytaj: "Nie rozpoznaję Twojego głosu — kim jesteś? Przedstaw się pełnym
-     zdaniem." Gdy osoba się przedstawi, wywołaj narzędzie przypisz_glos z jej
-     imieniem. Proś, by przedstawiła się sama osoba, której głosu nie rozpoznano.
-     ```
+   System-prompt snippet (includes the anti-overzealousness rules):
+
+   ```text
+   Wypowiedzi mają prefiks z imieniem mówcy ("Krzysztof: ...") albo "Mówca N:",
+   gdy głos jest nierozpoznany. Zasady dla "Mówca N:":
+   1. Najpierw normalnie obsłuż polecenie.
+   2. Nie pytaj o tożsamość przy krótkich wypowiedziach (mniej niż ~5 słów).
+   3. Zanim zapytasz, wywołaj narzędzie sprawdz_nieznany_glos; pytaj tylko gdy
+      should_ask jest true. Nie pytaj częściej niż raz na rozmowę.
+   4. Pytaj: "Nie rozpoznaję Twojego głosu — kim jesteś? Przedstaw się pełnym
+      zdaniem." Proś, by przedstawiła się sama osoba, której głosu nie rozpoznano.
+   5. Gdy osoba się przedstawi, wywołaj przypisz_glos z jej imieniem.
+   ```
 
    Known limitations (by design): a very short answer (< ~0.6 s, e.g. just "Anna")
    may not be buffered — the `max_age_seconds` guard then rejects the claim instead
@@ -447,6 +487,10 @@ Three ways to resolve a pending voice:
    If a *different unknown* person answers on someone's behalf, their voice would
    be enrolled under that name — hence the prompt asks the person to introduce
    themselves; misassignments are visible and reversible in the panel.
+
+   The `wyoming_transcribe_new_pending` event carries `voice_utterances` (cluster
+   size), so a notification automation can likewise alert only about regulars
+   (condition: `{{ trigger.event.data.voice_utterances >= 3 }}`).
 3. **Ignore/delete** — pending clips live in a ring buffer (`PENDING_MAX_CLIPS`,
    default 40); oldest are pruned automatically, or delete them in the UI.
 

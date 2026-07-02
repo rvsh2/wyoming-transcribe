@@ -593,6 +593,15 @@ async def list_pending():
     )
 
 
+@app.get("/pending/latest-voice")
+async def latest_voice():
+    """Cluster stats of the newest pending clip (regular-visitor check)."""
+    stats = pending_store().latest_voice_stats()
+    if stats is None:
+        raise HTTPException(status_code=404, detail="No pending utterances")
+    return JSONResponse(stats)
+
+
 @app.get("/pending/{utterance_id}/audio")
 async def get_pending_audio(utterance_id: str):
     try:

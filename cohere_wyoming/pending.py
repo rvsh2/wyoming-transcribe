@@ -206,6 +206,31 @@ class PendingStore:
                 return ids
         raise PendingError("Utterance not found")
 
+    def latest_voice_stats(self) -> Optional[dict]:
+        """Stats of the voice cluster containing the newest pending clip.
+
+        Lets an LLM agent ask "who are you?" only of regulars: a voice that has
+        spoken several times has a large cluster, a one-off visitor has one clip.
+        Returns None when the buffer is empty.
+        """
+        clips = self.list_clips()
+        if not clips:
+            return None
+        newest = max(clips, key=lambda clip: clip.get("created", 0.0))
+        for cluster in self.clusters():
+            ids = [clip["id"] for clip in cluster]
+            if newest["id"] in ids:
+                return {
+                    "utterance_id": newest["id"],
+                    "utterances": len(cluster),
+                    "seconds": round(sum(clip.get("seconds", 0.0) for clip in cluster), 2),
+                    "newest_age_seconds": round(
+                        max(0.0, time.time() - float(newest.get("created", 0.0))), 1
+                    ),
+                    "text": newest.get("text", ""),
+                }
+        return None  # pragma: no cover - newest clip always belongs to a cluster
+
     def audio_path(self, utterance_id: str) -> Path:
         path = self.root / f"{safe_utterance_id(utterance_id)}.wav"
         if not path.is_file():

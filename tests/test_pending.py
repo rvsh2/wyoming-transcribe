@@ -62,6 +62,23 @@ class PendingStoreTests(unittest.TestCase):
 
         self.assertEqual(set(self.store.cluster_members(a1)), {a1, a2})
 
+    def test_latest_voice_stats(self):
+        self.assertIsNone(self.store.latest_voice_stats())
+
+        anna = np.array([1.0, 0.0], dtype=np.float32)
+        bob = np.array([0.0, 1.0], dtype=np.float32)
+        self.store.save(tone(2.0), 16000, text="a1", embedding=anna)
+        self.store.save(tone(3.0), 16000, text="bob", embedding=bob)
+        newest = self.store.save(tone(4.0), 16000, text="a2", embedding=anna)
+
+        stats = self.store.latest_voice_stats()
+        # Newest clip is Anna's; her cluster has 2 clips totalling ~6 s.
+        self.assertEqual(stats["utterance_id"], newest)
+        self.assertEqual(stats["utterances"], 2)
+        self.assertAlmostEqual(stats["seconds"], 6.0, places=1)
+        self.assertLess(stats["newest_age_seconds"], 5.0)
+        self.assertEqual(stats["text"], "a2")
+
     def test_delete_and_invalid_ids(self):
         utterance_id = self.store.save(tone(), 16000, text="x")
         self.store.delete(utterance_id)
