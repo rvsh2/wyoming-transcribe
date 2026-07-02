@@ -429,12 +429,53 @@ of the recognized dominant speaker is delivered as:
 
 - `speaker_role` in the Wyoming `Transcript` event (modes `field`/`both`),
 - `speaker_role` in `verbose_json` HTTP responses,
-- `role` per person in `GET /speakers`.
+- `role` per person in `GET /speakers` (and in the `enrolled_speakers` sensor's
+  `roles` attribute in the HA integration).
 
-The STT server only *labels* the speaker — enforcement belongs in the HA pipeline
-(e.g. the LLM prompt: "only `admin` may unlock doors; `guest` may only ask
-questions"). Voice can be imitated, so do not treat the role as strong
-authentication for critical actions.
+**What a role does by itself: nothing.** The STT server only *labels* who spoke;
+it has no idea what "locks" or "lights" are in your Home Assistant. Deciding what
+each role may do — and enforcing it — belongs where actions are executed: in your
+conversation agent / voice pipeline. Unrecognized voices carry no role at all
+(`speaker_role: null`) and are handled like any other utterance.
+
+#### How to use roles in practice
+
+**Pattern 1 — `prefix` mode (default), policy in the agent prompt.** In this mode
+the role is *not* in the text — only the name is (`Krzysztof: zgaś światło`). Keep
+the role policy in your LLM agent's system prompt, keyed by name:
+
+```text
+Wypowiedzi mają prefiks z imieniem mówcy ("Krzysztof: ...") albo "Mówca N:" gdy
+głos jest nierozpoznany. Zasady:
+- Krzysztof (admin): pełna kontrola domu, w tym zamki, alarm i konfiguracja.
+- Anna (user): sterowanie światłem, muzyką i temperaturą; bez zamków i alarmu.
+- goście / "Mówca N": odpowiadaj tylko na pytania informacyjne, nie wykonuj akcji.
+Gdy wypowiedź przekracza uprawnienia mówcy, odmów i powiedz dlaczego.
+```
+
+Simple and works today; the cost is updating the prompt when people change.
+
+**Pattern 2 — `field`/`both` mode, policy keyed by role.** A custom pipeline
+component (or an agent that receives the Wyoming event data) reads `speaker` and
+`speaker_role` from the `Transcript` event and injects one line into the LLM
+context, e.g. `mówca: Krzysztof (rola: admin)`. The prompt then needs only the
+per-role policy (three lines), not a per-person list:
+
+```text
+Kontekst zawiera "mówca: <imię> (rola: <rola>)". Zasady wg roli:
+- admin: wszystkie akcje; user: bez zamków/alarmu/konfiguracji;
+- guest lub brak roli: tylko odpowiedzi informacyjne, żadnych akcji.
+```
+
+**Pattern 3 — automations keyed on role.** The `enrolled_speakers` sensor exposes a
+`roles` attribute (name → role), and an agent tool can also `GET /speakers` to check
+a role dynamically before performing a sensitive action.
+
+**Security note:** a voice can be imitated or replayed; treat roles as convenience
+authorization for everyday comfort (lights, media, blinds), not as strong
+authentication. Critical actions (door locks, alarm, purchases) should require a
+second factor regardless of role — e.g. a PIN in the conversation or confirmation
+from a companion-app notification.
 
 ### Management API auth
 
