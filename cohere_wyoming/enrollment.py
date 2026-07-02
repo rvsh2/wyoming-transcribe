@@ -2,9 +2,14 @@
 
 Samples are normalized to 16 kHz mono WAV on upload so they are consistent for
 ECAPA embedding regardless of the original container/codec.
+
+Each person can carry a role (admin/user/guest, default user) in a
+``.meta.json`` file inside their directory; the role is surfaced with the
+recognized speaker so the HA pipeline/LLM can authorize actions.
 """
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import time
@@ -17,6 +22,20 @@ from .audio import TARGET_SAMPLE_RATE, read_audio_to_numpy
 
 
 _UNSAFE_NAME = re.compile(r"[^A-Za-z0-9 _\-À-ſ]+")
+
+SPEAKER_ROLES = ("admin", "user", "guest")
+DEFAULT_ROLE = "user"
+_META_FILENAME = ".meta.json"
+
+
+def read_role(enrollment_dir: str | Path, name: str) -> str:
+    """Role of an enrolled person (default 'user'); safe for unknown names."""
+    try:
+        meta_path = Path(enrollment_dir) / safe_person(name) / _META_FILENAME
+        role = json.loads(meta_path.read_text(encoding="utf-8")).get("role")
+        return role if role in SPEAKER_ROLES else DEFAULT_ROLE
+    except Exception:
+        return DEFAULT_ROLE
 
 
 class EnrollmentError(ValueError):
@@ -59,7 +78,11 @@ class EnrollmentStore:
             if person_dir.name.startswith("."):
                 continue
             speakers.append(
-                {"name": person_dir.name, "samples": self._list_samples(person_dir)}
+                {
+                    "name": person_dir.name,
+                    "role": read_role(self.root, person_dir.name),
+                    "samples": self._list_samples(person_dir),
+                }
             )
         return speakers
 
@@ -113,3 +136,20 @@ class EnrollmentStore:
 
     def delete_sample(self, name: str, sample_id: str) -> None:
         self.sample_path(name, sample_id).unlink()
+
+    def set_role(self, name: str, role: str) -> str:
+        if role not in SPEAKER_ROLES:
+            raise EnrollmentError(
+                f"Invalid role '{role}'; valid roles: {', '.join(SPEAKER_ROLES)}"
+            )
+        person_dir = self._person_dir(name, must_exist=True)
+        meta_path = person_dir / _META_FILENAME
+        meta = {}
+        if meta_path.is_file():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except Exception:
+                meta = {}
+        meta["role"] = role
+        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        return role

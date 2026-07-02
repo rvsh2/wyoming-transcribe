@@ -12,3 +12,5 @@ Recording*.wav
 memory.md
 implementation_plan.md
 docs/
+custom_components/
+hacs.json

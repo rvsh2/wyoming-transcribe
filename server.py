@@ -22,7 +22,8 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 
 from cohere_wyoming.audio import is_effectively_silent, read_audio_to_numpy
-from cohere_wyoming.enrollment import EnrollmentError, EnrollmentStore
+from cohere_wyoming.enrollment import SPEAKER_ROLES, EnrollmentError, EnrollmentStore
+from cohere_wyoming.pending import PendingError, PendingStore
 from cohere_wyoming.transcriber import (
     CohereTranscriber,
     LANGUAGE_ALIASES,
@@ -208,6 +209,8 @@ def format_whisper_response(response_format: str, result: dict):
                 "text": text,
                 "speaker": result.get("speaker"),
                 "speaker_score": result.get("speaker_score"),
+                "speaker_role": result.get("speaker_role"),
+                "utterance_id": result.get("utterance_id"),
                 "segments": build_segments(result),
             }
         )
@@ -227,6 +230,8 @@ def format_openai_response(response_format: str, result: dict):
                 "text": text,
                 "speaker": result.get("speaker"),
                 "speaker_score": result.get("speaker_score"),
+                "speaker_role": result.get("speaker_role"),
+                "utterance_id": result.get("utterance_id"),
                 "segments": build_segments(result),
             }
         )
@@ -475,6 +480,84 @@ def enrollment_store() -> EnrollmentStore:
     return EnrollmentStore(service.speaker_registry.enrollment_dir)
 
 
+def pending_store() -> PendingStore:
+    return PendingStore.from_env(service.speaker_registry.enrollment_dir)
+
+
+def public_clip(clip: dict) -> dict:
+    """Pending-clip metadata without the embedding vector."""
+    return {key: value for key, value in clip.items() if key != "embedding"}
+
+
+@app.get("/pending")
+async def list_pending():
+    """Unrecognized-voice clips grouped by voice (cluster = same speaker)."""
+    clusters = pending_store().clusters()
+    return JSONResponse(
+        {
+            "count": sum(len(cluster) for cluster in clusters),
+            "clusters": [
+                {"cluster": index, "clips": [public_clip(clip) for clip in cluster]}
+                for index, cluster in enumerate(clusters)
+            ],
+        }
+    )
+
+
+@app.get("/pending/{utterance_id}/audio")
+async def get_pending_audio(utterance_id: str):
+    try:
+        path = pending_store().audio_path(utterance_id)
+    except PendingError as err:
+        raise HTTPException(status_code=404, detail=str(err)) from err
+    return FileResponse(str(path), media_type="audio/wav", filename=f"{utterance_id}.wav")
+
+
+@app.delete("/pending/{utterance_id}")
+async def delete_pending(utterance_id: str):
+    try:
+        pending_store().delete(utterance_id)
+    except PendingError as err:
+        raise HTTPException(status_code=404, detail=str(err)) from err
+    return JSONResponse({"status": "ok"})
+
+
+@app.post("/speakers/{name}/samples/from-utterance/{utterance_id}")
+async def claim_pending(name: str, utterance_id: str, include_cluster: bool = Form(True)):
+    """Enroll pending clip(s) as samples of a (possibly new) person.
+
+    With include_cluster (default), all pending clips of the same voice are
+    claimed together, so the person's profile immediately has several samples.
+    This is the endpoint an LLM pipeline calls after asking "who is speaking?".
+    """
+    store = pending_store()
+    enrollment = enrollment_store()
+    try:
+        ids = store.cluster_members(utterance_id) if include_cluster else [utterance_id]
+        samples = []
+        for clip_id in ids:
+            audio_bytes = store.audio_path(clip_id).read_bytes()
+            samples.append(enrollment.add_sample(name, audio_bytes, f"{clip_id}.wav"))
+            store.delete(clip_id)
+    except PendingError as err:
+        raise HTTPException(status_code=404, detail=str(err)) from err
+    except EnrollmentError as err:
+        raise HTTPException(status_code=400, detail=str(err)) from err
+    return JSONResponse(
+        {"status": "ok", "name": name, "claimed": ids, "samples": samples}
+    )
+
+
+@app.post("/speakers/{name}/role")
+async def set_speaker_role(name: str, role: str = Form(...)):
+    try:
+        saved = enrollment_store().set_role(name, role)
+    except EnrollmentError as err:
+        status = 404 if "does not exist" in str(err) else 400
+        raise HTTPException(status_code=status, detail=str(err)) from err
+    return JSONResponse({"status": "ok", "name": name, "role": saved})
+
+
 @app.get("/speakers")
 async def list_speakers():
     speakers = enrollment_store().list_speakers()
@@ -482,7 +565,9 @@ async def list_speakers():
     # (UI) process never loads embeddings, so registry._profiles is always empty.
     status = service.speaker_registry.status_payload()
     status["enrolled"] = [s["name"] for s in speakers if s["samples"]]
-    return JSONResponse({"speakers": speakers, "speaker_id": status})
+    return JSONResponse(
+        {"speakers": speakers, "speaker_id": status, "roles": list(SPEAKER_ROLES)}
+    )
 
 
 @app.post("/speakers")

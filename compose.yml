@@ -8,11 +8,11 @@ services:
     restart: unless-stopped
     ports:
       - "0.0.0.0:10300:10300"
-      # The management API (speaker enrollment, /load) has no authentication, so
-      # it is published on loopback only. To use the UI from another machine,
-      # tunnel it (ssh -L 8580:127.0.0.1:8580 <host>) or put it behind an
-      # authenticating reverse proxy instead of widening this bind.
-      - "127.0.0.1:8580:8580"
+      # The management API (speaker enrollment, /load) is published on loopback
+      # by default. To use the UI from another machine or embed it in Home
+      # Assistant (HACS integration / iframe panel), set UI_BIND=0.0.0.0 in
+      # .env AND set API_TOKEN — never expose the API without a token.
+      - "${UI_BIND:-127.0.0.1}:8580:8580"
     networks:
       - bridge-network
     volumes:

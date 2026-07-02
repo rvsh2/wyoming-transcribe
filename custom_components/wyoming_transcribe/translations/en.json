@@ -1,0 +1,29 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Wyoming Transcribe server",
+        "description": "Point at the management API (port 8580 by default). The host must be reachable from your browser as well — the UI is embedded as a sidebar panel.",
+        "data": {
+          "host": "Host (LAN address of the Docker host)",
+          "port": "Port",
+          "api_token": "API token (only if API_TOKEN is set on the server)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to the server (check host/port and that port 8580 is exposed).",
+      "invalid_auth": "The API token was rejected."
+    },
+    "abort": {
+      "already_configured": "This server is already configured."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "model_status": { "name": "Model status" },
+      "enrolled_speakers": { "name": "Enrolled speakers" },
+      "pending_voices": { "name": "Pending voices" }
+    }
+  }
+}

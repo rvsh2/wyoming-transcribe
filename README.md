@@ -141,6 +141,30 @@ Typical setup:
 2. Add it in Home Assistant through the `Wyoming Protocol` integration.
 3. In Home Assistant, enter the host and port `10300`.
 
+### HACS integration (UI panel + sensors in HA)
+
+This repo ships a Home Assistant custom integration (`custom_components/wyoming_transcribe`)
+that embeds the enrollment/management UI as a **sidebar panel** in HA and adds status
+sensors (model status, enrolled speakers, pending unrecognized voices — handy for an
+automation like "notify me when a new unknown voice is waiting").
+
+Install:
+
+1. On the server: set `API_TOKEN=<secret>` and `UI_BIND=0.0.0.0` in `.env`, then
+   `docker compose up -d` (never expose port 8580 without a token).
+2. HACS → Integrations → ⋮ → **Custom repositories** → add this repo URL, category
+   *Integration* → install **Wyoming Transcribe** → restart HA.
+3. Settings → Devices & services → **Add integration** → *Wyoming Transcribe* → enter
+   the Docker host's LAN address, port `8580` and the API token.
+4. A "Wyoming Transcribe" entry appears in the sidebar (admin-only). Inside the
+   embedded UI, paste the same token into the *API token* box once (stored in the
+   browser).
+
+Note: the sidebar panel is an iframe, so the browser talks to port 8580 directly —
+the host you configure must be reachable from clients, not only from HA. Without
+HACS you can get the same panel with a manual `panel_iframe` entry in
+`configuration.yaml`.
+
 Currently supported events:
 
 - `describe`
@@ -250,6 +274,60 @@ UI settings card — the Wyoming process picks the change up on the next transcr
 - `both` — prefixed text and the event fields.
 
 `verbose_json` HTTP responses include `speaker`/`speaker_score` in all modes.
+
+### Unknown voices & "who are you?" enrollment
+
+When speaker identification is enabled and the **dominant speaker of an utterance does
+not match any enrolled person**, the Wyoming process buffers that speaker's audio
+(their concatenated segments, min. `PENDING_MIN_SECONDS`, default 1 s) in
+`<enrollment_dir>/.pending/` together with the transcript and an ECAPA voiceprint.
+The `Transcript` event then carries an `utterance_id` (in **every** text mode).
+
+Three ways to resolve a pending voice:
+
+1. **UI (manual verification)** — the "Nierozpoznane głosy" card lists pending clips
+   *grouped by voice* (one group = one person, matched by voiceprint similarity,
+   `PENDING_CLUSTER_THRESHOLD`, default 0.40). Play each clip, check who it is, and
+   assign the group to an existing or new person. Assigning a group moves all its
+   clips to that person as enrollment samples at once, so the profile is immediately
+   built from several samples instead of one weak clip.
+2. **LLM pipeline ("who are you?")** — when the event has `speaker: null` and an
+   `utterance_id`, the conversation agent can ask the person for their name and then
+   call (as a tool):
+
+   ```bash
+   curl -X POST -H "X-API-Token: $API_TOKEN" \
+     -F include_cluster=true \
+     "http://HOST:8580/speakers/Krzysztof/samples/from-utterance/utt-1783015551000-ab12cd34"
+   ```
+
+   `include_cluster=true` (default) claims **all pending clips of the same voice**,
+   so one confirmed answer enrolls the person with several samples. The person is
+   created automatically if missing. From the next utterance the voice is recognized
+   (`speaker: "Krzysztof"`).
+3. **Ignore/delete** — pending clips live in a ring buffer (`PENDING_MAX_CLIPS`,
+   default 40); oldest are pruned automatically, or delete them in the UI.
+
+Pending API: `GET /pending` (clusters), `GET /pending/{id}/audio`,
+`DELETE /pending/{id}`, `POST /speakers/{name}/samples/from-utterance/{id}`.
+
+Privacy note: this stores voice clips of unrecognized people (guests included) on
+disk until pruned, claimed, or deleted.
+
+### Speaker roles (authorization for the pipeline)
+
+Every enrolled person has a role: `admin`, `user` (default) or `guest`, set in the UI
+next to the person (or via `POST /speakers/{name}/role` with `role=admin`). The role
+of the recognized dominant speaker is delivered as:
+
+- `speaker_role` in the Wyoming `Transcript` event (modes `field`/`both`),
+- `speaker_role` in `verbose_json` HTTP responses,
+- `role` per person in `GET /speakers`.
+
+The STT server only *labels* the speaker — enforcement belongs in the HA pipeline
+(e.g. the LLM prompt: "only `admin` may unlock doors; `guest` may only ask
+questions"). Voice can be imitated, so do not treat the role as strong
+authentication for critical actions.
 
 ### Management API auth
 

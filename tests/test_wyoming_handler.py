@@ -81,6 +81,42 @@ class WyomingHandlerTests(unittest.TestCase):
         self.assertEqual(event.data["speaker"], "Krzysztof")
         self.assertEqual(event.data["speaker_score"], 0.82)
 
+    def test_transcript_event_carries_utterance_id_in_every_mode(self):
+        class FakeTranscriber:
+            def transcribe_pcm(self, *_args, **_kwargs):
+                return SimpleNamespace(
+                    text="Mówca 0: kto to?",
+                    language="pl",
+                    text_mode="prefix",
+                    speaker=None,
+                    speaker_score=None,
+                    speaker_role=None,
+                    utterance_id="utt-123-abcdef01",
+                )
+
+        event = self._run_pipeline(FakeTranscriber())
+        # utterance_id is needed for the "who are you?" flow even in prefix mode.
+        self.assertEqual(event.data["utterance_id"], "utt-123-abcdef01")
+        self.assertNotIn("speaker", event.data)
+
+    def test_transcript_event_carries_role_in_field_mode(self):
+        class FakeTranscriber:
+            def transcribe_pcm(self, *_args, **_kwargs):
+                return SimpleNamespace(
+                    text="zgaś światło",
+                    language="pl",
+                    text_mode="field",
+                    speaker="Krzysztof",
+                    speaker_score=0.82,
+                    speaker_role="admin",
+                    utterance_id=None,
+                )
+
+        event = self._run_pipeline(FakeTranscriber())
+        self.assertEqual(event.data["speaker"], "Krzysztof")
+        self.assertEqual(event.data["speaker_role"], "admin")
+        self.assertNotIn("utterance_id", event.data)
+
     def test_transcript_event_omits_speaker_field_in_prefix_mode(self):
         class FakeTranscriber:
             def transcribe_pcm(self, *_args, **_kwargs):

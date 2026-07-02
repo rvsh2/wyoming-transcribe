@@ -10,6 +10,7 @@ import numpy as np
 from cohere_wyoming.enrollment import (
     EnrollmentError,
     EnrollmentStore,
+    read_role,
     safe_person,
     safe_sample_id,
 )
@@ -96,6 +97,35 @@ class EnrollmentStoreTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             with self.assertRaises(EnrollmentError):
                 EnrollmentStore(tmp).delete_speaker("ghost")
+
+    def test_roles_default_set_and_validate(self):
+        with TemporaryDirectory() as tmp:
+            store = EnrollmentStore(tmp)
+            store.create_speaker("Krzysztof")
+
+            # Default role for anyone (also unknown names) is "user".
+            self.assertEqual(read_role(tmp, "Krzysztof"), "user")
+            self.assertEqual(read_role(tmp, "ghost"), "user")
+            self.assertEqual(store.list_speakers()[0]["role"], "user")
+
+            store.set_role("Krzysztof", "admin")
+            self.assertEqual(read_role(tmp, "Krzysztof"), "admin")
+            self.assertEqual(store.list_speakers()[0]["role"], "admin")
+
+            with self.assertRaises(EnrollmentError):
+                store.set_role("Krzysztof", "root")
+            with self.assertRaises(EnrollmentError):
+                store.set_role("ghost", "admin")
+
+    def test_role_meta_file_does_not_break_sample_listing(self):
+        with TemporaryDirectory() as tmp:
+            store = EnrollmentStore(tmp)
+            store.create_speaker("Anna")
+            store.set_role("Anna", "guest")
+            store.add_sample("Anna", wav_bytes(0.5), "hi.wav")
+            speakers = store.list_speakers()
+            self.assertEqual(len(speakers[0]["samples"]), 1)
+            self.assertEqual(speakers[0]["role"], "guest")
 
 
 if __name__ == "__main__":

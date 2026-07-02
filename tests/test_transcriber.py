@@ -394,6 +394,49 @@ class SpeakerTextAndIdentificationTests(unittest.TestCase):
         self.assertIsNone(name)
         self.assertIsNone(score)
 
+    def test_save_pending_utterance_buffers_dominant_voice(self):
+        import tempfile
+
+        from cohere_wyoming.pending import PendingStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            transcriber = CohereTranscriber()
+            transcriber.pending_store = PendingStore(tmp)
+            embedding = np.array([0.6, 0.8], dtype=np.float32)
+            transcriber.speaker_registry = SimpleNamespace(
+                enabled=True,
+                embed=lambda _clip: embedding,
+            )
+            # Dominant speaker 0 (4s) vs speaker 1 (1s).
+            segments = [
+                {"speaker": 0, "start": 0.0, "end": 4.0, "text": "zgaś światło w salonie"},
+                {"speaker": 1, "start": 4.0, "end": 5.0, "text": "ok"},
+            ]
+            audio = np.random.default_rng(7).normal(0, 0.05, 6 * 16000).astype(np.float32)
+
+            utterance_id = transcriber._save_pending_utterance(
+                segments, audio, 16000, "zgaś światło w salonie\nok"
+            )
+
+            self.assertIsNotNone(utterance_id)
+            clips = transcriber.pending_store.list_clips()
+            self.assertEqual(len(clips), 1)
+            self.assertAlmostEqual(clips[0]["seconds"], 4.0, places=1)
+            self.assertEqual(clips[0]["embedding"], embedding.tolist())
+
+    def test_save_pending_utterance_never_raises(self):
+        transcriber = CohereTranscriber()
+        transcriber.pending_store = SimpleNamespace(
+            save=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("disk full"))
+        )
+        transcriber.speaker_registry = SimpleNamespace(enabled=True, embed=lambda _c: None)
+        segments = [{"speaker": 0, "start": 0.0, "end": 2.0, "text": "x"}]
+        audio = np.zeros(3 * 16000, dtype=np.float32)
+
+        self.assertIsNone(
+            transcriber._save_pending_utterance(segments, audio, 16000, "x")
+        )
+
 
 class MergeDiarizedWindowsTests(unittest.TestCase):
     """Speaker indices restart per window; merging must remap them globally."""

@@ -271,6 +271,63 @@ class CohereTranscribeApiTests(unittest.TestCase):
         self.assertEqual(payload["speaker"], "Krzysztof")
         self.assertEqual(payload["speaker_score"], 0.82)
 
+    def test_pending_claim_and_role_endpoints(self):
+        import tempfile
+
+        import numpy as np
+
+        from cohere_wyoming.enrollment import EnrollmentStore
+        from cohere_wyoming.pending import PendingStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingStore(tmp)
+            enrollment = EnrollmentStore(tmp)
+            voice = np.array([1.0, 0.0], dtype=np.float32)
+            other = np.array([0.0, 1.0], dtype=np.float32)
+            t = np.arange(32000, dtype=np.float32) / 16000
+            clip = (0.1 * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32)
+            id_a = pending.save(clip, 16000, text="pierwsze", embedding=voice)
+            id_b = pending.save(clip, 16000, text="drugie", embedding=voice)
+            id_c = pending.save(clip, 16000, text="ktoś inny", embedding=other)
+
+            with patch.object(server, "pending_store", lambda: pending), patch.object(
+                server, "enrollment_store", lambda: enrollment
+            ):
+                payload = self.decode_json_response(self.run_async(server.list_pending()))
+                self.assertEqual(payload["count"], 3)
+                self.assertEqual(len(payload["clusters"]), 2)
+                self.assertNotIn("embedding", payload["clusters"][0]["clips"][0])
+
+                # Claiming one clip pulls in its whole voice cluster.
+                response = self.run_async(
+                    server.claim_pending("Krzysztof", id_a, include_cluster=True)
+                )
+                claim = self.decode_json_response(response)
+                self.assertEqual(set(claim["claimed"]), {id_a, id_b})
+                self.assertEqual(len(claim["samples"]), 2)
+
+                speakers = enrollment.list_speakers()
+                self.assertEqual(speakers[0]["name"], "Krzysztof")
+                self.assertEqual(len(speakers[0]["samples"]), 2)
+                self.assertEqual(len(pending.list_clips()), 1)
+
+                # Role endpoint.
+                response = self.run_async(server.set_speaker_role("Krzysztof", role="admin"))
+                self.assertEqual(self.decode_json_response(response)["role"], "admin")
+                self.assertEqual(enrollment.list_speakers()[0]["role"], "admin")
+
+                with self.assertRaises(HTTPException) as ctx:
+                    self.run_async(server.set_speaker_role("Krzysztof", role="root"))
+                self.assertEqual(ctx.exception.status_code, 400)
+                with self.assertRaises(HTTPException) as ctx:
+                    self.run_async(server.claim_pending("X", "utt-1-00000000", include_cluster=False))
+                self.assertEqual(ctx.exception.status_code, 404)
+
+                # The other voice stays pending for manual verification.
+                payload = self.decode_json_response(self.run_async(server.list_pending()))
+                self.assertEqual(payload["count"], 1)
+                self.assertEqual(payload["clusters"][0]["clips"][0]["id"], id_c)
+
     def test_openai_endpoint_returns_verbose_json(self):
         mocked_result = SimpleNamespace(
             asdict=lambda: {

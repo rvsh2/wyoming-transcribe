@@ -48,6 +48,35 @@
 - Optional `API_TOKEN` env: when set, every endpoint except `/` and `/health` requires
   `X-API-Token` or `Authorization: Bearer`; the UI stores the token in the browser.
 
+### Unknown voices & "who are you?" enrollment
+
+- Unrecognized dominant speakers are buffered in `<enrollment_dir>/.pending/` (clip +
+  transcript + ECAPA voiceprint; ring buffer `PENDING_MAX_CLIPS`, min length
+  `PENDING_MIN_SECONDS`); the Transcript event carries `utterance_id` in every mode.
+- `GET /pending` groups clips by voice (greedy voiceprint clustering,
+  `PENDING_CLUSTER_THRESHOLD`); `POST /speakers/{name}/samples/from-utterance/{id}`
+  claims a clip — with `include_cluster=true` (default) the whole voice group — as
+  enrollment samples, auto-creating the person. This is the LLM tool for the
+  "who are you?" flow.
+- New UI card "Nierozpoznane głosy": listen to pending clips, verify who speaks,
+  assign a group to a person, or delete. Sample/pending playback now fetches with
+  auth headers (works with API_TOKEN enabled).
+
+### Speaker roles
+
+- Each person has a role (`admin`/`user`/`guest`, default `user`; `.meta.json` in the
+  person's dir), set from the UI or `POST /speakers/{name}/role`. The recognized
+  dominant speaker's role is delivered as `speaker_role` in the Wyoming event
+  (field/both modes) and in `verbose_json`.
+
+### Home Assistant integration (HACS)
+
+- New custom integration `custom_components/wyoming_transcribe`: config flow
+  (host/port/token), the management UI embedded as an admin-only sidebar iframe
+  panel, and sensors (model status, enrolled speakers, pending voices).
+- `hacs.json` added; compose supports `UI_BIND` (default loopback; set `0.0.0.0`
+  together with `API_TOKEN` to expose the UI for HA/browsers).
+
 ### Startup
 
 - The full request path is warmed at startup: audio conversion/resample (librosa/soxr

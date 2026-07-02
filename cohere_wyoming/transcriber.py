@@ -15,6 +15,8 @@ import torch
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
 
 from .audio import is_effectively_silent, read_audio_to_numpy
+from .enrollment import read_role
+from .pending import PendingStore
 from .settings import DEFAULT_SPEAKER_TEXT_MODE, SettingsStore
 from .speaker_id import SpeakerRegistry
 from .vad import SileroVoiceActivityDetector, VadConfig
@@ -77,12 +79,17 @@ def chunk_audio(audio_data: np.ndarray, sample_rate: int, max_seconds: int = MAX
     return chunks
 
 
-def parse_diarized_output(raw: str, offset: float = 0.0) -> list[dict]:
+def parse_diarized_output(raw: str, offset: float = 0.0, duration: Optional[float] = None) -> list[dict]:
     """Parse the diarize token stream into ordered speaker segments.
 
     Format (confirmed via spike): ``<|spltokenN|><|t:START|> text <|t:END|>`` repeated,
     terminated by ``<|endoftext|>``. Timestamps are offset by ``offset`` seconds so
     segments from later chunks land on the global timeline.
+
+    The model often omits the closing timestamp of the last segment; ``duration``
+    (the window length in seconds) is used as that segment's end so it never
+    collapses to a zero-length span (which would break speaker identification,
+    pending-voice clips and subtitle cues).
     """
     diarize_split = raw.split("<|diarize|>", 1)
     body = diarize_split[1] if len(diarize_split) > 1 else raw
@@ -100,6 +107,8 @@ def parse_diarized_output(raw: str, offset: float = 0.0) -> list[dict]:
             end = float(end_match.group(1))
         elif index + 1 < len(matches):
             end = float(matches[index + 1].group(2))
+        elif duration is not None:
+            end = max(start, duration)
 
         if not text:
             continue
@@ -116,7 +125,14 @@ def parse_diarized_output(raw: str, offset: float = 0.0) -> list[dict]:
         # No diarize tokens (e.g. empty/garbled generation) - fall back to plain text.
         plain = _SPECIAL_TOKEN_RE.sub("", body).strip()
         if plain:
-            segments.append({"speaker": 0, "start": offset, "end": offset, "text": plain})
+            segments.append(
+                {
+                    "speaker": 0,
+                    "start": offset,
+                    "end": round(offset + (duration or 0.0), 2),
+                    "text": plain,
+                }
+            )
 
     return segments
 
@@ -196,6 +212,10 @@ class TranscriptionResult:
     # Enrolled name of the dominant speaker (most speech time), if recognized.
     speaker: Optional[str] = None
     speaker_score: Optional[float] = None
+    # Role of the recognized dominant speaker (admin/user/guest).
+    speaker_role: Optional[str] = None
+    # Pending-clip id saved for an unrecognized dominant speaker (see pending.py).
+    utterance_id: Optional[str] = None
     # Speaker text mode the transcript text was rendered with (see settings.py).
     text_mode: str = DEFAULT_SPEAKER_TEXT_MODE
 
@@ -215,6 +235,7 @@ class CohereTranscriber:
         vad_config: Optional[VadConfig] = None,
         speaker_registry: Optional[SpeakerRegistry] = None,
         settings_store: Optional[SettingsStore] = None,
+        pending_store: Optional[PendingStore] = None,
     ) -> None:
         self.model_name = model_name
         self.default_language = self.resolve_language(default_language)
@@ -226,6 +247,13 @@ class CohereTranscriber:
         self.vad_detector = SileroVoiceActivityDetector(vad_config or VadConfig.from_env())
         self.speaker_registry = speaker_registry
         self.settings_store = settings_store or SettingsStore.from_env()
+        # Unrecognized-voice buffer; only useful with speaker ID active.
+        if pending_store is not None:
+            self.pending_store = pending_store
+        elif speaker_registry is not None and speaker_registry.enabled:
+            self.pending_store = PendingStore.from_env(speaker_registry.enrollment_dir)
+        else:
+            self.pending_store = None
         self.speaker_chain_threshold = float(
             os.environ.get("SPEAKER_CHAIN_THRESHOLD", DEFAULT_CHAIN_THRESHOLD)
         )
@@ -462,6 +490,13 @@ class CohereTranscriber:
         dominant_name, dominant_score = self._dominant_speaker(segments)
         text = render_speaker_text(segments, mode=text_mode)
 
+        speaker_role = None
+        utterance_id = None
+        if dominant_name and self.speaker_registry is not None:
+            speaker_role = read_role(self.speaker_registry.enrollment_dir, dominant_name)
+        elif text.strip():
+            utterance_id = self._save_pending_utterance(segments, audio_data, sample_rate, text)
+
         elapsed = time.time() - start_time
         rtfx = duration_s / elapsed if elapsed > 0 else 0
         speaker_count = len({segment["speaker"] for segment in segments})
@@ -483,6 +518,8 @@ class CohereTranscriber:
             segments=segments,
             speaker=dominant_name,
             speaker_score=dominant_score,
+            speaker_role=speaker_role,
+            utterance_id=utterance_id,
             text_mode=text_mode,
         )
 
@@ -655,7 +692,7 @@ class CohereTranscriber:
                 duration,
             )
 
-        return [parse_diarized_output(raw, offset=offset)]
+        return [parse_diarized_output(raw, offset=offset, duration=duration)]
 
     def _merge_diarized_windows(
         self,
@@ -810,21 +847,71 @@ class CohereTranscriber:
                 segment["score"] = match.score
 
     @staticmethod
-    def _dominant_speaker(segments: list[dict]) -> tuple[Optional[str], Optional[float]]:
-        """Enrolled name of the speaker with the most speech time, if recognized."""
+    def _dominant_speaker_index(segments: list[dict]) -> Optional[int]:
+        """Diarized speaker index with the most speech time."""
         if not segments:
-            return None, None
-
+            return None
         durations: dict[int, float] = {}
         for segment in segments:
             length = max(0.0, segment["end"] - segment["start"])
             durations[segment["speaker"]] = durations.get(segment["speaker"], 0.0) + length
+        return max(durations, key=durations.get)
 
-        dominant = max(durations, key=durations.get)
+    @classmethod
+    def _dominant_speaker(cls, segments: list[dict]) -> tuple[Optional[str], Optional[float]]:
+        """Enrolled name of the speaker with the most speech time, if recognized."""
+        dominant = cls._dominant_speaker_index(segments)
+        if dominant is None:
+            return None, None
         for segment in segments:
             if segment["speaker"] == dominant and segment.get("name"):
                 return segment["name"], segment.get("score")
         return None, None
+
+    def _save_pending_utterance(
+        self,
+        segments: list[dict],
+        audio_data: np.ndarray,
+        sample_rate: int,
+        text: str,
+    ) -> Optional[str]:
+        """Buffer the unrecognized dominant speaker's audio for later enrollment.
+
+        The clip (that speaker's concatenated segments) lands in the pending
+        store with its transcript and ECAPA embedding; the returned utterance
+        id is exposed in the Transcript event so an LLM pipeline can ask "who
+        is speaking?" and claim the clip for a person. Never raises.
+        """
+        store = self.pending_store
+        registry = self.speaker_registry
+        if store is None or registry is None or not registry.enabled or not segments:
+            return None
+
+        try:
+            dominant = self._dominant_speaker_index(segments)
+            total_samples = len(audio_data)
+            parts = []
+            for segment in segments:
+                if segment["speaker"] != dominant:
+                    continue
+                start = max(0, int(segment["start"] * sample_rate))
+                end = min(total_samples, int(segment["end"] * sample_rate))
+                if end > start:
+                    parts.append(audio_data[start:end])
+            if not parts:
+                return None
+            clip = np.concatenate(parts)
+
+            embedding = None
+            try:
+                embedding = registry.embed(clip)
+            except Exception as error:
+                LOGGER.warning("Pending-clip embedding failed (saving without): %s", error)
+
+            return store.save(clip, sample_rate, text=text, embedding=embedding)
+        except Exception as error:
+            LOGGER.warning("Could not save pending utterance: %s", error)
+            return None
 
     def transcribe_file_bytes(
         self,

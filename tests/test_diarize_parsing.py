@@ -67,6 +67,29 @@ class ParseDiarizedOutputTests(unittest.TestCase):
     def test_empty_output_yields_no_segments(self):
         self.assertEqual(parse_diarized_output("<|diarize|><|endoftext|>"), [])
 
+    def test_missing_final_timestamp_falls_back_to_window_duration(self):
+        # Real single-segment case: the model often omits the closing <|t:END|>.
+        # Without the duration fallback the segment collapses to end == start,
+        # which yields a zero-length clip for speaker ID / pending voices.
+        raw = "<|diarize|><|spltoken0|><|t:0.0|> Zgaś światło w salonie.<|endoftext|>"
+        segments = parse_diarized_output(raw, duration=12.6)
+        self.assertEqual(len(segments), 1)
+        self.assertEqual(segments[0]["start"], 0.0)
+        self.assertEqual(segments[0]["end"], 12.6)
+
+        # Offset applies to the fallback end as well.
+        segments = parse_diarized_output(raw, offset=30.0, duration=12.6)
+        self.assertEqual(segments[0]["end"], 42.6)
+
+        # Without duration the old (degenerate) behavior is preserved.
+        segments = parse_diarized_output(raw)
+        self.assertEqual(segments[0]["end"], 0.0)
+
+    def test_plain_text_fallback_uses_duration(self):
+        segments = parse_diarized_output("just some plain text", offset=5.0, duration=3.0)
+        self.assertEqual(segments[0]["start"], 5.0)
+        self.assertEqual(segments[0]["end"], 8.0)
+
 
 class RenderSpeakerTextTests(unittest.TestCase):
     def test_renders_one_line_per_turn(self):

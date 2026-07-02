@@ -254,6 +254,17 @@
     </div>
 
     <div class="card">
+        <h2>Nierozpoznane głosy</h2>
+        <p class="hint">Wypowiedzi, których głos nie pasował do żadnej osoby, czekają tutaj
+            (pogrupowane: jedna grupa = ten sam głos). Odsłuchaj, sprawdź kto mówi i przypisz
+            do osoby — domyślnie przypisywana jest cała grupa, więc profil od razu dostaje
+            kilka próbek. Te same nagrania może przypisywać pipeline LLM przez
+            <code>utterance_id</code> z eventu transkrypcji.</p>
+        <div id="pending-status" class="hint"></div>
+        <div id="pending-list"></div>
+    </div>
+
+    <div class="card">
         <h2>Ustawienia</h2>
         <div class="form-row">
             <label for="speaker-text-mode">Przekazywanie tożsamości mówcy</label>
@@ -551,13 +562,46 @@ async function apiRequest(url, options) {
     return payload;
 }
 
+let knownSpeakers = [];
+let knownRoles = ["admin", "user", "guest"];
+
 async function loadSpeakers() {
     try {
         const data = await apiRequest("/speakers");
+        knownSpeakers = (data.speakers || []).map((s) => s.name);
+        knownRoles = data.roles || knownRoles;
         renderSpeakers(data.speakers || [], data.speaker_id || {});
     } catch (error) {
         setSpeakersStatus(`Błąd wczytywania: ${error.message}`, true);
     }
+}
+
+function renderAudioPlayer(url) {
+    // Fetches with auth headers on demand (a plain <audio src> cannot send
+    // the X-API-Token header when API_TOKEN is enabled).
+    const wrapper = document.createElement("span");
+    const button = document.createElement("button");
+    button.className = "button-secondary btn-small";
+    button.type = "button";
+    button.textContent = "▶ Odtwórz";
+    button.addEventListener("click", async () => {
+        button.disabled = true;
+        try {
+            const response = await fetch(url, { headers: authHeaders() });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const blob = await response.blob();
+            const audio = document.createElement("audio");
+            audio.controls = true;
+            audio.autoplay = true;
+            audio.src = URL.createObjectURL(blob);
+            wrapper.replaceChildren(audio);
+        } catch (error) {
+            button.disabled = false;
+            button.textContent = `Błąd (${error.message})`;
+        }
+    });
+    wrapper.appendChild(button);
+    return wrapper;
 }
 
 function renderSpeakers(speakers, status) {
@@ -600,6 +644,30 @@ function renderSpeakerCard(speaker) {
 
     const actions = document.createElement("div");
     actions.className = "button-row";
+
+    const roleSelect = document.createElement("select");
+    roleSelect.title = "Rola przekazywana w speaker_role — pipeline/LLM decyduje, co wolno.";
+    for (const role of knownRoles) {
+        const option = document.createElement("option");
+        option.value = role;
+        option.textContent = `rola: ${role}`;
+        roleSelect.appendChild(option);
+    }
+    roleSelect.value = speaker.role || "user";
+    roleSelect.addEventListener("change", async () => {
+        const form = new FormData();
+        form.append("role", roleSelect.value);
+        try {
+            await apiRequest(`/speakers/${encodeURIComponent(speaker.name)}/role`, {
+                method: "POST",
+                body: form,
+            });
+            setSpeakersStatus(`Rola „${speaker.name}” ustawiona na ${roleSelect.value}.`, false);
+        } catch (error) {
+            setSpeakersStatus(`Nie udało się zmienić roli: ${error.message}`, true);
+        }
+    });
+    actions.appendChild(roleSelect);
 
     const recordBtn = document.createElement("button");
     recordBtn.className = "button-secondary btn-small";
@@ -650,10 +718,9 @@ function renderSampleRow(speakerName, sample) {
     const row = document.createElement("div");
     row.className = "sample-row";
 
-    const audio = document.createElement("audio");
-    audio.controls = true;
-    audio.preload = "none";
-    audio.src = `/speakers/${encodeURIComponent(speakerName)}/samples/${encodeURIComponent(sample.id)}`;
+    const audio = renderAudioPlayer(
+        `/speakers/${encodeURIComponent(speakerName)}/samples/${encodeURIComponent(sample.id)}`
+    );
 
     const meta = document.createElement("span");
     meta.className = "sample-meta";
@@ -770,11 +837,150 @@ async function toggleSpeakerRecording(name, button) {
     }
 }
 
+const pendingList = document.getElementById("pending-list");
+const pendingStatus = document.getElementById("pending-status");
+
+async function loadPending() {
+    try {
+        const data = await apiRequest("/pending");
+        renderPending(data.clusters || []);
+    } catch (error) {
+        pendingStatus.textContent = `Błąd wczytywania: ${error.message}`;
+    }
+}
+
+function renderPending(clusters) {
+    pendingList.innerHTML = "";
+    const count = clusters.reduce((total, cluster) => total + cluster.clips.length, 0);
+    pendingStatus.textContent = count
+        ? `${count} nagrań w ${clusters.length} grupach (grupa = ten sam głos).`
+        : "Brak oczekujących nagrań — wszystkie głosy rozpoznane lub bufor pusty.";
+    for (const cluster of clusters) {
+        pendingList.appendChild(renderPendingCluster(cluster));
+    }
+}
+
+function assignTargetControls() {
+    const select = document.createElement("select");
+    for (const name of knownSpeakers) {
+        const option = document.createElement("option");
+        option.value = name;
+        option.textContent = name;
+        select.appendChild(option);
+    }
+    const newOption = document.createElement("option");
+    newOption.value = "__new__";
+    newOption.textContent = "+ nowa osoba…";
+    select.appendChild(newOption);
+    return select;
+}
+
+function resolveAssignTarget(select) {
+    if (select.value === "__new__") {
+        const name = prompt("Imię nowej osoby:");
+        return name && name.trim() ? name.trim() : null;
+    }
+    return select.value || null;
+}
+
+async function claimUtterance(name, utteranceId, includeCluster) {
+    const form = new FormData();
+    form.append("include_cluster", includeCluster ? "true" : "false");
+    try {
+        const result = await apiRequest(
+            `/speakers/${encodeURIComponent(name)}/samples/from-utterance/${encodeURIComponent(utteranceId)}`,
+            { method: "POST", body: form }
+        );
+        pendingStatus.textContent =
+            `Przypisano ${result.claimed.length} nagrań do „${name}”.`;
+    } catch (error) {
+        pendingStatus.textContent = `Nie udało się przypisać: ${error.message}`;
+    }
+    await loadPending();
+    await loadSpeakers();
+}
+
+function renderPendingCluster(cluster) {
+    const card = document.createElement("div");
+    card.className = "speaker-card";
+
+    const head = document.createElement("div");
+    head.className = "speaker-head";
+
+    const title = document.createElement("div");
+    const clipCount = cluster.clips.length;
+    title.innerHTML =
+        `<span class="speaker-name">Nieznany głos</span>` +
+        `<div class="speaker-meta">${clipCount} ${clipCount === 1 ? "nagranie" : "nagrań"}</div>`;
+    head.appendChild(title);
+
+    const actions = document.createElement("div");
+    actions.className = "button-row";
+    const target = assignTargetControls();
+    const assignAll = document.createElement("button");
+    assignAll.className = "btn-small";
+    assignAll.type = "button";
+    assignAll.textContent = "Przypisz grupę";
+    assignAll.addEventListener("click", () => {
+        const name = resolveAssignTarget(target);
+        if (name) claimUtterance(name, cluster.clips[0].id, true);
+    });
+    actions.appendChild(target);
+    actions.appendChild(assignAll);
+    head.appendChild(actions);
+    card.appendChild(head);
+
+    for (const clip of cluster.clips) {
+        const row = document.createElement("div");
+        row.className = "sample-row";
+
+        row.appendChild(renderAudioPlayer(`/pending/${encodeURIComponent(clip.id)}/audio`));
+
+        const meta = document.createElement("span");
+        meta.className = "sample-meta";
+        const when = clip.created ? new Date(clip.created * 1000).toLocaleString() : "";
+        const text = clip.text ? ` · „${clip.text}”` : "";
+        meta.textContent = `${(clip.seconds || 0).toFixed(1)} s · ${when}${text}`;
+
+        const spacer = document.createElement("div");
+        spacer.className = "spacer";
+
+        const assignOne = document.createElement("button");
+        assignOne.className = "button-secondary btn-small";
+        assignOne.type = "button";
+        assignOne.textContent = "Tylko to";
+        assignOne.addEventListener("click", () => {
+            const name = resolveAssignTarget(target);
+            if (name) claimUtterance(name, clip.id, false);
+        });
+
+        const remove = document.createElement("button");
+        remove.className = "button-danger btn-small";
+        remove.type = "button";
+        remove.textContent = "Usuń";
+        remove.addEventListener("click", async () => {
+            try {
+                await apiRequest(`/pending/${encodeURIComponent(clip.id)}`, { method: "DELETE" });
+            } catch (error) {
+                pendingStatus.textContent = `Nie udało się usunąć: ${error.message}`;
+            }
+            await loadPending();
+        });
+
+        row.appendChild(meta);
+        row.appendChild(spacer);
+        row.appendChild(assignOne);
+        row.appendChild(remove);
+        card.appendChild(row);
+    }
+    return card;
+}
+
 addSpeakerButton.addEventListener("click", addSpeaker);
 newSpeakerName.addEventListener("keydown", (event) => {
     if (event.key === "Enter") { event.preventDefault(); addSpeaker(); }
 });
-loadSpeakers();
+loadSpeakers().then(loadPending);
 
 const speakerTextMode = document.getElementById("speaker-text-mode");
 const saveSettingsButton = document.getElementById("save-settings-button");
@@ -785,7 +991,7 @@ apiTokenInput.value = localStorage.getItem("apiToken") || "";
 apiTokenInput.addEventListener("change", () => {
     localStorage.setItem("apiToken", apiTokenInput.value.trim());
     loadSettings();
-    loadSpeakers();
+    loadSpeakers().then(loadPending);
 });
 
 async function loadSettings() {

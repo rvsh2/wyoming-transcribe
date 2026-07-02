@@ -1,0 +1,29 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Serwer Wyoming Transcribe",
+        "description": "Wskaż API zarządzania (domyślnie port 8580). Host musi być osiągalny także z przeglądarki — UI jest osadzane jako panel boczny.",
+        "data": {
+          "host": "Host (adres LAN hosta Dockera)",
+          "port": "Port",
+          "api_token": "Token API (tylko jeśli serwer ma ustawione API_TOKEN)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Nie można połączyć się z serwerem (sprawdź host/port i czy port 8580 jest wystawiony).",
+      "invalid_auth": "Token API został odrzucony."
+    },
+    "abort": {
+      "already_configured": "Ten serwer jest już skonfigurowany."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "model_status": { "name": "Status modelu" },
+      "enrolled_speakers": { "name": "Zdefiniowane osoby" },
+      "pending_voices": { "name": "Nierozpoznane głosy" }
+    }
+  }
+}

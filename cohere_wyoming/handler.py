@@ -93,7 +93,7 @@ class CohereWyomingEventHandler(AsyncEventHandler):
 
         text = ""
         language = self.requested_language
-        speaker: dict = {}
+        extra_data: dict = {}
         try:
             audio_data, sample_rate = pcm16le_to_float32(
                 pcm_audio,
@@ -111,18 +111,24 @@ class CohereWyomingEventHandler(AsyncEventHandler):
             )
             text = result.text
             language = result.language
-            # In "field"/"both" mode the dominant speaker's enrolled name rides
-            # along in the event data; HA ignores unknown keys, custom pipeline
-            # components can consume it.
+            # In "field"/"both" mode the dominant speaker's enrolled identity
+            # rides along in the event data; HA ignores unknown keys, custom
+            # pipeline components can consume them.
             if getattr(result, "text_mode", "prefix") in ("field", "both"):
-                speaker = {"speaker": result.speaker}
+                extra_data["speaker"] = result.speaker
                 if result.speaker_score is not None:
-                    speaker["speaker_score"] = result.speaker_score
+                    extra_data["speaker_score"] = result.speaker_score
+                if getattr(result, "speaker_role", None):
+                    extra_data["speaker_role"] = result.speaker_role
+            # The pending-clip id is sent in every mode: it cannot be derived
+            # from the text and the "who are you?" enrollment flow needs it.
+            if getattr(result, "utterance_id", None):
+                extra_data["utterance_id"] = result.utterance_id
         except Exception:
             # Always answer with a Transcript: without one Home Assistant's
             # voice pipeline hangs until its own timeout.
             LOGGER.exception("Transcription failed; returning an empty transcript")
 
         event = Transcript(text=text, language=language).event()
-        event.data.update(speaker)
+        event.data.update(extra_data)
         await self.write_event(event)
