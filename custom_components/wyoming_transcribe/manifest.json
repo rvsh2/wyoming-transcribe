@@ -3,11 +3,11 @@
   "name": "Wyoming Transcribe",
   "codeowners": ["@rvsh2"],
   "config_flow": true,
-  "dependencies": ["frontend"],
+  "dependencies": ["frontend", "http"],
   "documentation": "https://github.com/rvsh2/wyoming-transcribe-diarize",
   "integration_type": "service",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/rvsh2/wyoming-transcribe-diarize/issues",
   "requirements": [],
-  "version": "0.2.0"
+  "version": "0.3.0"
 }

@@ -225,8 +225,23 @@ Typical setup:
 ### HACS integration (UI panel + sensors in HA)
 
 This repo ships a Home Assistant custom integration (`custom_components/wyoming_transcribe`)
-that embeds the enrollment/management UI as a **sidebar panel** in HA and adds status
+with the **full management UI as a native HA sidebar panel** (speakers with roles and
+sample recording, unrecognized voices, recognition log, settings, backup) plus status
 sensors (model status, enrolled speakers, pending unrecognized voices).
+
+Since 0.3.0 the panel is not an iframe: it is rendered by the HA frontend and talks to
+the server through an **authenticated proxy** (`/api/wyoming_transcribe/proxy/...`,
+admin-only). Consequences:
+
+- the API token lives only in the integration's config — never in the browser;
+- port `8580` must be reachable **from the HA host only**, not from every browser;
+- the panel works remotely (Nabu Casa / external URL) like any other HA page;
+- microphone recording in the panel needs HA served over **HTTPS** (same browser rule
+  as Assist's microphone); on plain http the panel says so and you can still upload
+  files or assign real utterances from the pending section.
+
+The panel is the primary UI going forward; the server-side page on port `8580` stays
+as a frozen fallback for non-HA setups.
 
 The integration also gives automations and LLM tools native HA hooks:
 
@@ -247,19 +262,15 @@ behind the utterance.
 Install:
 
 1. On the server: set `API_TOKEN=<secret>` and `UI_BIND=0.0.0.0` in `.env`, then
-   `docker compose up -d` (never expose port 8580 without a token).
+   `docker compose up -d` (never expose port 8580 without a token; if HA runs on the
+   same host, `UI_BIND` can stay `127.0.0.1`).
 2. HACS → Integrations → ⋮ → **Custom repositories** → add this repo URL, category
    *Integration* → install **Wyoming Transcribe** → restart HA.
 3. Settings → Devices & services → **Add integration** → *Wyoming Transcribe* → enter
-   the Docker host's LAN address, port `8580` and the API token.
-4. A "Wyoming Transcribe" entry appears in the sidebar (admin-only). Inside the
-   embedded UI, paste the same token into the *API token* box once (stored in the
-   browser).
-
-Note: the sidebar panel is an iframe, so the browser talks to port 8580 directly —
-the host you configure must be reachable from clients, not only from HA. Without
-HACS you can get the same panel with a manual `panel_iframe` entry in
-`configuration.yaml`.
+   the Docker host's address, port `8580` and the API token. That is the only place
+   the token is ever entered.
+4. A "Wyoming Transcribe" entry appears in the sidebar (admin-only) with the full
+   management UI.
 
 Currently supported events:
 

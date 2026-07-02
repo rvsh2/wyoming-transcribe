@@ -10,15 +10,18 @@ from __future__ import annotations
 
 import logging
 from datetime import timedelta
+from pathlib import Path
 from urllib.parse import quote
 
 import aiohttp
 import voluptuous as vol
+from aiohttp import web
 
 from homeassistant.components import frontend
+from homeassistant.components.http import HomeAssistantView, StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, Unauthorized
 from homeassistant.helpers import aiohttp_client
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -38,6 +41,10 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORMS = ["sensor"]
 SCAN_INTERVAL = timedelta(seconds=60)
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15)
+# Uploads (voice samples, backup archives) can take longer than status calls.
+PROXY_TIMEOUT = aiohttp.ClientTimeout(total=120)
+
+PANEL_STATIC_PATH = "/wyoming_transcribe_static"
 
 EVENT_NEW_PENDING = f"{DOMAIN}_new_pending"
 
@@ -68,6 +75,66 @@ def _first_runtime(hass: HomeAssistant) -> dict:
     if not runtimes:
         raise HomeAssistantError("No Wyoming Transcribe server is configured")
     return next(iter(runtimes.values()))
+
+
+class WyomingTranscribeProxyView(HomeAssistantView):
+    """Authenticated proxy to the management API.
+
+    The panel talks to this view with the user's HA credentials
+    (hass.fetchWithAuth); the view forwards to the server adding the API
+    token, so the token never reaches the browser and port 8580 only needs
+    to be reachable from the HA host.
+    """
+
+    url = "/api/wyoming_transcribe/proxy/{path:.+}"
+    name = "api:wyoming_transcribe:proxy"
+    requires_auth = True
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        self.hass = hass
+
+    async def _proxy(self, request: web.Request, path: str) -> web.Response:
+        user = request.get("hass_user")
+        if user is None or not user.is_admin:
+            raise Unauthorized()
+
+        runtime = _first_runtime(self.hass)
+        headers = dict(runtime["headers"])
+        if request.content_type:
+            headers["Content-Type"] = request.headers.get("Content-Type", "")
+        body = await request.read() if request.method in ("POST", "PUT") else None
+
+        try:
+            async with runtime["session"].request(
+                request.method,
+                f"{runtime['base']}/{path}",
+                params=request.query,
+                data=body,
+                headers=headers,
+                timeout=PROXY_TIMEOUT,
+            ) as response:
+                payload = await response.read()
+                return web.Response(
+                    body=payload,
+                    status=response.status,
+                    content_type=response.content_type,
+                )
+        except HomeAssistantError:
+            raise
+        except Exception as error:
+            return web.json_response(
+                {"detail": f"Wyoming Transcribe server unreachable: {error}"},
+                status=502,
+            )
+
+    async def get(self, request: web.Request, path: str) -> web.Response:
+        return await self._proxy(request, path)
+
+    async def post(self, request: web.Request, path: str) -> web.Response:
+        return await self._proxy(request, path)
+
+    async def delete(self, request: web.Request, path: str) -> web.Response:
+        return await self._proxy(request, path)
 
 
 async def _api_post(runtime: dict, path: str, fields: dict) -> dict:
@@ -191,15 +258,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     _async_register_services(hass)
 
-    # The iframe URL is opened by the *browser*, so the configured host must be
-    # reachable from clients (LAN address), not just from Home Assistant.
+    # Serve the panel module and register it as a custom sidebar panel. The
+    # panel talks to the server exclusively through the authenticated proxy
+    # view, so browsers never need direct access to port 8580.
+    if not hass.data.get(f"{DOMAIN}_http_registered"):
+        await hass.http.async_register_static_paths(
+            [
+                StaticPathConfig(
+                    PANEL_STATIC_PATH,
+                    str(Path(__file__).parent / "frontend"),
+                    cache_headers=False,
+                )
+            ]
+        )
+        hass.http.register_view(WyomingTranscribeProxyView(hass))
+        hass.data[f"{DOMAIN}_http_registered"] = True
+
     frontend.async_register_built_in_panel(
         hass,
-        "iframe",
+        "custom",
         sidebar_title=PANEL_TITLE,
         sidebar_icon=PANEL_ICON,
         frontend_url_path=PANEL_URL_PATH,
-        config={"url": base},
+        config={
+            "_panel_custom": {
+                "name": "wyoming-transcribe-panel",
+                "module_url": f"{PANEL_STATIC_PATH}/panel.js",
+                "embed_iframe": False,
+                "trust_external": False,
+            }
+        },
         require_admin=True,
         update=True,
     )

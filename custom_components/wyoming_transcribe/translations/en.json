@@ -3,9 +3,9 @@
     "step": {
       "user": {
         "title": "Wyoming Transcribe server",
-        "description": "Point at the management API (port 8580 by default). The host must be reachable from your browser as well — the UI is embedded as a sidebar panel.",
+        "description": "Point at the management API (port 8580 by default). It only needs to be reachable from Home Assistant — the sidebar panel talks to it through an authenticated proxy, so browsers never contact the server directly.",
         "data": {
-          "host": "Host (LAN address of the Docker host)",
+          "host": "Host (address of the Docker host, reachable from HA)",
           "port": "Port",
           "api_token": "API token (only if API_TOKEN is set on the server)"
         }

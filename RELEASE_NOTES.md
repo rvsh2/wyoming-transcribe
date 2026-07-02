@@ -1,5 +1,22 @@
 # Release Notes
 
+## 2026-07-02 (v0.3.0)
+
+### Native HA panel (no more iframe)
+
+- The full management UI (speakers with roles and mic recording, unrecognized
+  voices, recognition log, settings, enrollment backup) is now a native HA custom
+  panel (`frontend/panel.js`) rendered by the Home Assistant frontend.
+- All panel traffic goes through a new authenticated, admin-only proxy view
+  (`/api/wyoming_transcribe/proxy/{path}`) that adds the API token server-side:
+  the token never reaches the browser, port 8580 only needs to be reachable from
+  the HA host, and the panel works remotely (Nabu Casa/external URL).
+- Microphone recording is enabled in secure contexts (HTTPS), with a visible
+  notice on plain http (same browser rule as Assist's microphone); file upload
+  and pending-voice assignment work regardless.
+- The server-side page on port 8580 remains as a frozen fallback for non-HA
+  setups; the HA panel is the primary UI going forward. Integration 0.3.0.
+
 ## 2026-07-02 (v0.2.0)
 
 ### Home Assistant: services + event for the "who are you?" flow
