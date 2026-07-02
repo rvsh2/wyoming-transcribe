@@ -49,6 +49,7 @@ PANEL_STATIC_PATH = "/wyoming_transcribe_static"
 EVENT_NEW_PENDING = f"{DOMAIN}_new_pending"
 
 SERVICE_CLAIM_UTTERANCE = "claim_utterance"
+SERVICE_CLAIM_LATEST = "claim_latest"
 SERVICE_SET_ROLE = "set_role"
 
 CLAIM_UTTERANCE_SCHEMA = vol.Schema(
@@ -56,6 +57,13 @@ CLAIM_UTTERANCE_SCHEMA = vol.Schema(
         vol.Required("name"): cv.string,
         vol.Required("utterance_id"): cv.string,
         vol.Optional("include_cluster", default=True): cv.boolean,
+    }
+)
+CLAIM_LATEST_SCHEMA = vol.Schema(
+    {
+        vol.Required("name"): cv.string,
+        vol.Optional("include_cluster", default=True): cv.boolean,
+        vol.Optional("max_age_seconds", default=300): vol.Coerce(float),
     }
 )
 SET_ROLE_SCHEMA = vol.Schema(
@@ -171,6 +179,24 @@ def _async_register_services(hass: HomeAssistant) -> None:
             {"include_cluster": "true" if call.data["include_cluster"] else "false"},
         )
 
+    async def handle_claim_latest(call: ServiceCall) -> None:
+        """Enroll the newest unrecognized utterance (voice-anchored claim).
+
+        Designed as an LLM tool for the "who are you?" flow: no utterance_id
+        needed — the newest pending clip is the answer that just happened, and
+        its voice cluster covers everything that person said.
+        """
+        runtime = _first_runtime(hass)
+        name = quote(call.data["name"], safe="")
+        await _api_post(
+            runtime,
+            f"/speakers/{name}/samples/from-latest",
+            {
+                "include_cluster": "true" if call.data["include_cluster"] else "false",
+                "max_age_seconds": call.data["max_age_seconds"],
+            },
+        )
+
     async def handle_set_role(call: ServiceCall) -> None:
         runtime = _first_runtime(hass)
         name = quote(call.data["name"], safe="")
@@ -178,6 +204,9 @@ def _async_register_services(hass: HomeAssistant) -> None:
 
     hass.services.async_register(
         DOMAIN, SERVICE_CLAIM_UTTERANCE, handle_claim_utterance, schema=CLAIM_UTTERANCE_SCHEMA
+    )
+    hass.services.async_register(
+        DOMAIN, SERVICE_CLAIM_LATEST, handle_claim_latest, schema=CLAIM_LATEST_SCHEMA
     )
     hass.services.async_register(
         DOMAIN, SERVICE_SET_ROLE, handle_set_role, schema=SET_ROLE_SCHEMA
@@ -302,7 +331,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN].pop(entry.entry_id, None)
         if not hass.data[DOMAIN]:
             frontend.async_remove_panel(hass, PANEL_URL_PATH)
-            for service in (SERVICE_CLAIM_UTTERANCE, SERVICE_SET_ROLE):
+            for service in (SERVICE_CLAIM_UTTERANCE, SERVICE_CLAIM_LATEST, SERVICE_SET_ROLE):
                 if hass.services.has_service(DOMAIN, service):
                     hass.services.async_remove(DOMAIN, service)
     return unload_ok

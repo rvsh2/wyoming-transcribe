@@ -13,6 +13,7 @@ import logging
 import os
 import secrets
 import tarfile
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -610,14 +611,8 @@ async def delete_pending(utterance_id: str):
     return JSONResponse({"status": "ok"})
 
 
-@app.post("/speakers/{name}/samples/from-utterance/{utterance_id}")
-async def claim_pending(name: str, utterance_id: str, include_cluster: bool = Form(True)):
-    """Enroll pending clip(s) as samples of a (possibly new) person.
-
-    With include_cluster (default), all pending clips of the same voice are
-    claimed together, so the person's profile immediately has several samples.
-    This is the endpoint an LLM pipeline calls after asking "who is speaking?".
-    """
+def _claim_clips(name: str, utterance_id: str, include_cluster: bool) -> JSONResponse:
+    """Enroll a pending clip (and optionally its voice cluster) as samples."""
     store = pending_store()
     enrollment = enrollment_store()
     try:
@@ -634,6 +629,47 @@ async def claim_pending(name: str, utterance_id: str, include_cluster: bool = Fo
     return JSONResponse(
         {"status": "ok", "name": name, "claimed": ids, "samples": samples}
     )
+
+
+@app.post("/speakers/{name}/samples/from-utterance/{utterance_id}")
+async def claim_pending(name: str, utterance_id: str, include_cluster: bool = Form(True)):
+    """Enroll pending clip(s) as samples of a (possibly new) person.
+
+    With include_cluster (default), all pending clips of the same voice are
+    claimed together, so the person's profile immediately has several samples.
+    """
+    return _claim_clips(name, utterance_id, include_cluster)
+
+
+@app.post("/speakers/{name}/samples/from-latest")
+async def claim_latest(
+    name: str,
+    include_cluster: bool = Form(True),
+    max_age_seconds: float = Form(300.0),
+):
+    """Enroll the most recent unrecognized utterance (with its voice cluster).
+
+    Voice-anchored "who are you?" flow for LLM pipelines: right after an
+    unknown speaker answers with their name, the newest pending clip is that
+    answer, and its cluster covers everything that voice said — so no
+    utterance_id has to travel through the pipeline. max_age_seconds guards
+    against claiming a stale clip when the answer was too short to be
+    buffered.
+    """
+    clips = pending_store().list_clips()
+    if not clips:
+        raise HTTPException(status_code=404, detail="No pending utterances to claim")
+    newest = max(clips, key=lambda clip: clip.get("created", 0.0))
+    age = time.time() - float(newest.get("created", 0.0))
+    if age > max_age_seconds:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Newest pending utterance is {age:.0f}s old (limit {max_age_seconds:.0f}s); "
+                "refusing to claim a stale clip"
+            ),
+        )
+    return _claim_clips(name, newest["id"], include_cluster)
 
 
 @app.post("/speakers/{name}/role")

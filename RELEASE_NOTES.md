@@ -1,5 +1,24 @@
 # Release Notes
 
+## 2026-07-02 (v0.4.0)
+
+### Voice-anchored "who are you?" enrollment for LLM agents
+
+- New `POST /speakers/{name}/samples/from-latest` and HA service
+  `wyoming_transcribe.claim_latest` (`name`, optional `include_cluster`,
+  `max_age_seconds` default 300): claims the newest pending clip and its voice
+  cluster. The unknown person's *answer* ("jestem Anna") is itself buffered and
+  anchors the claim, so the voice matching (clustering) picks the right person
+  even when another voice interjected — and no utterance_id has to travel through
+  the pipeline. A stale-anchor guard (409) prevents claiming an unrelated clip
+  when the answer was too short to buffer.
+- `PENDING_MIN_SECONDS` default lowered 1.0 → 0.6 s so short introduction answers
+  are buffered (ECAPA embedding minimum is 0.4 s).
+- README: ready-to-use HA script (Assist-exposed tool) + system-prompt snippet for
+  the flow, with documented limitations (very short answers; third-person answers).
+- HA automation shipped separately in the user's HA: UI notification on
+  `wyoming_transcribe_new_pending` as a fallback when nobody answers.
+
 ## 2026-07-02 (v0.3.0)
 
 ### Native HA panel (no more iframe)

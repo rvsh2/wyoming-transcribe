@@ -36,7 +36,10 @@ LOGGER = logging.getLogger("cohere-wyoming.pending")
 PENDING_DIRNAME = ".pending"
 
 # Clips shorter than this are useless as voice samples and are not kept.
-DEFAULT_MIN_SECONDS = 1.0
+# 0.6 s keeps short "who are you?" answers ("Jestem Anna") buffered — they anchor
+# the voice-matched claim_latest flow — while the ECAPA embedding still works
+# (its own minimum is 0.4 s).
+DEFAULT_MIN_SECONDS = 0.6
 # Ring-buffer size; oldest clips are pruned first.
 DEFAULT_MAX_CLIPS = 40
 # Two pending clips with embedding cosine similarity >= this are treated as the

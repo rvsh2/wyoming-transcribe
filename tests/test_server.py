@@ -328,6 +328,53 @@ class CohereTranscribeApiTests(unittest.TestCase):
                 self.assertEqual(payload["count"], 1)
                 self.assertEqual(payload["clusters"][0]["clips"][0]["id"], id_c)
 
+    def test_claim_latest_claims_newest_voice_cluster(self):
+        import tempfile
+
+        import numpy as np
+
+        from cohere_wyoming.enrollment import EnrollmentStore
+        from cohere_wyoming.pending import PendingStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingStore(tmp)
+            enrollment = EnrollmentStore(tmp)
+            anna = np.array([1.0, 0.0], dtype=np.float32)
+            bob = np.array([0.0, 1.0], dtype=np.float32)
+            t = np.arange(32000, dtype=np.float32) / 16000
+            clip = (0.1 * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32)
+            id_bob = pending.save(clip, 16000, text="bob mówi", embedding=bob)
+            id_anna1 = pending.save(clip, 16000, text="zgaś światło", embedding=anna)
+            id_anna2 = pending.save(clip, 16000, text="jestem Anna", embedding=anna)
+
+            with patch.object(server, "pending_store", lambda: pending), patch.object(
+                server, "enrollment_store", lambda: enrollment
+            ):
+                # The newest clip (Anna's answer) anchors the claim; Bob's
+                # earlier interjection stays untouched.
+                response = self.run_async(
+                    server.claim_latest("Anna", include_cluster=True, max_age_seconds=300.0)
+                )
+                claim = self.decode_json_response(response)
+                self.assertEqual(set(claim["claimed"]), {id_anna1, id_anna2})
+
+                remaining = [clip["id"] for clip in pending.list_clips()]
+                self.assertEqual(remaining, [id_bob])
+
+                # Stale newest clip -> 409 (the answer was not buffered).
+                with self.assertRaises(HTTPException) as ctx:
+                    self.run_async(
+                        server.claim_latest("Ktoś", include_cluster=True, max_age_seconds=0.0)
+                    )
+                self.assertEqual(ctx.exception.status_code, 409)
+
+                pending.delete(id_bob)
+                with self.assertRaises(HTTPException) as ctx:
+                    self.run_async(
+                        server.claim_latest("Ktoś", include_cluster=True, max_age_seconds=300.0)
+                    )
+                self.assertEqual(ctx.exception.status_code, 404)
+
     def test_export_import_roundtrip(self):
         import tarfile
         import tempfile

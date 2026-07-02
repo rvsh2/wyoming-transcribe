@@ -24,6 +24,37 @@ claim_utterance:
       selector:
         boolean:
 
+claim_latest:
+  name: Claim latest utterance
+  description: >-
+    Enroll the most recent unrecognized utterance (and all buffered clips of
+    the same voice) as a person's samples. The LLM tool for the "who are
+    you?" flow — call it right after the person answers with their name; no
+    utterance_id needed. Refuses when the newest clip is older than
+    max_age_seconds (the answer may have been too short to buffer).
+  fields:
+    name:
+      name: Person name
+      required: true
+      example: "Anna"
+      selector:
+        text:
+    include_cluster:
+      name: Include voice cluster
+      description: Also claim all other pending clips of the same voice (recommended).
+      default: true
+      selector:
+        boolean:
+    max_age_seconds:
+      name: Maximum clip age (seconds)
+      description: Refuse to claim when the newest pending clip is older than this.
+      default: 300
+      selector:
+        number:
+          min: 10
+          max: 3600
+          unit_of_measurement: s
+
 set_role:
   name: Set speaker role
   description: Set the authorization role of an enrolled person (admin/user/guest).

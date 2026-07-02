@@ -249,11 +249,12 @@ The integration also gives automations and LLM tools native HA hooks:
   lands in the pending buffer (data: `utterance_id`, `text`, `seconds`, `created`).
   Example automation: send an actionable notification "Nowy głos: *zgaś światło* —
   kto to?" with buttons that call the claim service per household member.
+- **Service `wyoming_transcribe.claim_latest`** (`name`, optional `include_cluster`,
+  `max_age_seconds`) — voice-anchored enrollment of the newest unrecognized
+  utterance; the LLM tool for the "who are you?" flow (no utterance_id needed).
 - **Service `wyoming_transcribe.claim_utterance`** (`name`, `utterance_id`,
-  `include_cluster` default true) — enrolls the pending clip (and its voice group)
-  as the person's samples; the person is created if missing. Expose this as an LLM
-  tool in your conversation agent and the "who are you?" flow needs no curl or
-  tokens in prompts.
+  `include_cluster` default true) — like above but for an explicit clip, e.g. from
+  the `wyoming_transcribe_new_pending` event data.
 - **Service `wyoming_transcribe.set_role`** (`name`, `role`: admin/user/guest).
 
 Note: pending clips are polled every 60 s, so the event can lag up to a minute
@@ -386,7 +387,7 @@ UI settings card — the Wyoming process picks the change up on the next transcr
 
 When speaker identification is enabled and the **dominant speaker of an utterance does
 not match any enrolled person**, the Wyoming process buffers that speaker's audio
-(their concatenated segments, min. `PENDING_MIN_SECONDS`, default 1 s) in
+(their concatenated segments, min. `PENDING_MIN_SECONDS`, default 0.6 s) in
 `<enrollment_dir>/.pending/` together with the transcript and an ECAPA voiceprint.
 The `Transcript` event then carries an `utterance_id` (in **every** text mode).
 
@@ -398,20 +399,54 @@ Three ways to resolve a pending voice:
    assign the group to an existing or new person. Assigning a group moves all its
    clips to that person as enrollment samples at once, so the profile is immediately
    built from several samples instead of one weak clip.
-2. **LLM pipeline ("who are you?")** — when the event has `speaker: null` and an
-   `utterance_id`, the conversation agent can ask the person for their name and then
-   call (as a tool):
+2. **LLM pipeline ("who are you?") — the voice-anchored flow.** The conversation
+   agent does not need any `utterance_id`: when the unknown person answers with
+   their name, that answer is itself buffered and becomes the newest pending clip,
+   and the voice clustering ties it to everything else that person said. Claiming
+   "the newest clip + its voice cluster" therefore assigns the *right* voice even
+   if another person interjected in between. That is exactly what
+   `POST /speakers/{name}/samples/from-latest` and the HA service
+   `wyoming_transcribe.claim_latest` do (with a `max_age_seconds` guard, default
+   300 s, refusing stale anchors).
 
-   ```bash
-   curl -X POST -H "X-API-Token: $API_TOKEN" \
-     -F include_cluster=true \
-     "http://HOST:8580/speakers/Krzysztof/samples/from-utterance/utt-1783015551000-ab12cd34"
-   ```
+   Recipe for a Home Assistant LLM conversation agent:
 
-   `include_cluster=true` (default) claims **all pending clips of the same voice**,
-   so one confirmed answer enrolls the person with several samples. The person is
-   created automatically if missing. From the next utterance the voice is recognized
-   (`speaker: "Krzysztof"`).
+   - Create a script, expose it to Assist, and the agent can call it as a tool:
+
+     ```yaml
+     script:
+       przypisz_glos:
+         alias: "Przypisz nierozpoznany głos do osoby"
+         description: >-
+           Wywołaj po tym, jak nierozpoznana osoba przedstawi się z imienia.
+           Przypisuje jej głos (ostatnią wypowiedź i wszystkie nagrania tego
+           samego głosu) do podanego imienia.
+         fields:
+           name:
+             description: "Imię osoby, np. Anna"
+             required: true
+         sequence:
+           - service: wyoming_transcribe.claim_latest
+             data:
+               name: "{{ name }}"
+     ```
+
+   - Add to the agent's system prompt:
+
+     ```text
+     Wypowiedzi mają prefiks z imieniem mówcy ("Krzysztof: ...") albo "Mówca N:",
+     gdy głos jest nierozpoznany. Gdy widzisz "Mówca N:", po obsłużeniu polecenia
+     zapytaj: "Nie rozpoznaję Twojego głosu — kim jesteś? Przedstaw się pełnym
+     zdaniem." Gdy osoba się przedstawi, wywołaj narzędzie przypisz_glos z jej
+     imieniem. Proś, by przedstawiła się sama osoba, której głosu nie rozpoznano.
+     ```
+
+   Known limitations (by design): a very short answer (< ~0.6 s, e.g. just "Anna")
+   may not be buffered — the `max_age_seconds` guard then rejects the claim instead
+   of assigning a wrong clip, and the agent should ask again for a full sentence.
+   If a *different unknown* person answers on someone's behalf, their voice would
+   be enrolled under that name — hence the prompt asks the person to introduce
+   themselves; misassignments are visible and reversible in the panel.
 3. **Ignore/delete** — pending clips live in a ring buffer (`PENDING_MAX_CLIPS`,
    default 40); oldest are pruned automatically, or delete them in the UI.
 
