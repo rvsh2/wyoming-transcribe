@@ -492,7 +492,7 @@ class MergeDiarizedWindowsTests(unittest.TestCase):
 
         self.assertEqual([segment["speaker"] for segment in merged], [0, 0])
 
-    def test_without_registry_windows_never_share_speakers(self):
+    def test_without_registry_raw_indices_are_preserved(self):
         transcriber = CohereTranscriber()
         transcriber.speaker_registry = None
         windows = [
@@ -504,10 +504,11 @@ class MergeDiarizedWindowsTests(unittest.TestCase):
             windows, np.zeros(70 * 16000, dtype=np.float32), 16000
         )
 
-        # Conservative fallback: never merge two windows' speakers blindly.
-        self.assertEqual([segment["speaker"] for segment in merged], [0, 1])
+        # Without voiceprints the model's own indices are kept (pre-remap
+        # behavior): one person over multiple windows stays one speaker.
+        self.assertEqual([segment["speaker"] for segment in merged], [0, 0])
 
-    def test_embedding_failure_falls_back_to_fresh_indices(self):
+    def test_embedding_failure_preserves_raw_indices(self):
         transcriber = CohereTranscriber()
 
         def broken_embed(_clips):
@@ -523,7 +524,7 @@ class MergeDiarizedWindowsTests(unittest.TestCase):
             windows, np.zeros(70 * 16000, dtype=np.float32), 16000
         )
 
-        self.assertEqual([segment["speaker"] for segment in merged], [0, 1])
+        self.assertEqual([segment["speaker"] for segment in merged], [0, 0])
 
     def test_two_speakers_per_window_are_matched_pairwise(self):
         transcriber = CohereTranscriber()

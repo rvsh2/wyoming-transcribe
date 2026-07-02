@@ -1,5 +1,37 @@
 # Release Notes
 
+## 2026-07-02 (v0.5.1)
+
+### Second QA review — 10 findings fixed
+
+- **claim_latest race**: optional `anchor_utterance_id` (returned by
+  `check_latest_voice` and threaded through the README recipe) pins the claim to
+  the exact voice that triggered the question — another unknown voice speaking
+  in between can no longer be enrolled under the wrong name.
+- **All-or-nothing claims**: `_claim_clips` reads all cluster audio before
+  enrolling anything; a clip pruned mid-claim fails the whole request instead of
+  half-applying it.
+- **Window-merge regression**: without the embedding backend (speaker ID
+  disabled or embedding failure) the model's raw speaker indices are preserved
+  across 30 s windows again — a single speaker is no longer shredded into
+  "Mówca 0/1/2".
+- **Auth**: token comparison is byte-wise (non-ASCII input yielded 500 instead
+  of 401); a non-ASCII `API_TOKEN` logs a loud warning at startup.
+- **Config flow**: the token check always runs — a blank token against a
+  protected server now fails with `invalid_auth` instead of creating a broken
+  entry.
+- **ASR readiness**: `/health` gains `asr_ready` (the `--no-load-model` UI
+  process probes the Wyoming port), and the HA "Model status" sensor reports
+  `ok`/`unavailable` from it instead of the management process's eternal
+  "loading".
+- **Multi-server**: services accept an optional `host` field; with several
+  config entries the target must be named instead of silently using the first.
+- **Recognition log**: cross-process file locking (flock) — compaction can no
+  longer clobber a concurrent append.
+- **Persistent failures visible**: 3+ consecutive transcription errors log a
+  loud ERROR (empty-transcript replies otherwise hide breakage from HA).
+- **Upgrade note** in README for the loopback-by-default `UI_BIND` change.
+
 ## 2026-07-02 (v0.5.0)
 
 ### Regular-visitor gating for the "who are you?" flow

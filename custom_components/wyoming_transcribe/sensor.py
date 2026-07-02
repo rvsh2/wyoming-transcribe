@@ -51,6 +51,11 @@ class ModelStatusSensor(WyomingTranscribeSensor):
     @property
     def native_value(self):
         health = self.coordinator.data.get("health") or {}
+        # asr_ready covers the shipped split deployment: the management API
+        # process runs --no-load-model (its own status is forever "loading"),
+        # while the Wyoming process owns the model; the server probes its port.
+        if "asr_ready" in health:
+            return "ok" if health["asr_ready"] else "unavailable"
         return health.get("status")
 
     @property
@@ -60,6 +65,8 @@ class ModelStatusSensor(WyomingTranscribeSensor):
             "model": health.get("model"),
             "device": health.get("device"),
             "ready": health.get("ready"),
+            "asr_ready": health.get("asr_ready"),
+            "management_status": health.get("status"),
         }
 
 

@@ -9,11 +9,13 @@ so the Wyoming process writes it and the UI process reads it.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -40,6 +42,20 @@ class RecognitionLog:
         self.path = Path(enrollment_dir) / HISTORY_FILENAME
         self.max_entries = max_entries
         self._lock = threading.Lock()
+
+    @contextmanager
+    def _file_lock(self):
+        """Cross-process exclusive lock (the file is shared between the
+        Wyoming and HTTP processes; a threading.Lock alone cannot stop one
+        process's compaction from clobbering the other's fresh append)."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = self.path.with_suffix(".jsonl.lock")
+        with lock_path.open("w") as lock_handle:
+            fcntl.flock(lock_handle, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_handle, fcntl.LOCK_UN)
 
     @classmethod
     def from_env(cls, enrollment_dir: Optional[str | os.PathLike] = None) -> Optional["RecognitionLog"]:
@@ -77,8 +93,7 @@ class RecognitionLog:
             "utterance_id": utterance_id,
         }
         try:
-            with self._lock:
-                self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self._lock, self._file_lock():
                 with self.path.open("a", encoding="utf-8") as handle:
                     handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
                 self._compact_locked()
@@ -116,7 +131,7 @@ class RecognitionLog:
 
     def recent(self, limit: int = 50) -> list[dict]:
         """Newest entries first."""
-        with self._lock:
+        with self._lock, self._file_lock():
             entries = self._read_entries_locked()
         entries = entries[-max(0, limit):] if limit else entries
         return list(reversed(entries))

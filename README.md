@@ -163,6 +163,13 @@ The simplest option:
 docker compose up --build -d
 ```
 
+> **Upgrade note (2026-07-02):** port `8580` (management API/UI) is now published
+> on `127.0.0.1` by default for security. If you previously reached the UI from
+> another machine — or use the HACS integration from a separate HA host — set
+> `UI_BIND=0.0.0.0` **and** `API_TOKEN=<secret>` in `.env`, then
+> `docker compose up -d`. A "connection refused" on 8580 after upgrading means
+> exactly this.
+
 `compose.yml` runs the Wyoming service on port `10300`, the enrollment UI on port `8580`,
 mounts `./speakers` for enrolled voices, and includes a ready-to-use VAD preset for Home
 Assistant. The container starts both services from `docker-entrypoint.sh` (the UI process
@@ -455,16 +462,21 @@ Three ways to resolve a pending voice:
        alias: "Przypisz nierozpoznany głos do osoby"
        description: >-
          Wywołaj po tym, jak nierozpoznana osoba przedstawi się z imienia.
-         Przypisuje jej głos (ostatnią wypowiedź i wszystkie nagrania tego
-         samego głosu) do podanego imienia.
+         Podaj anchor_utterance_id zwrócone przez sprawdz_nieznany_glos —
+         wtedy przypisywany jest dokładnie ten głos, nawet jeśli w
+         międzyczasie odezwał się ktoś inny.
        fields:
          name:
            description: "Imię osoby, np. Anna"
            required: true
+         anchor_utterance_id:
+           description: "utterance_id ze sprawdz_nieznany_glos"
+           required: false
        sequence:
          - service: wyoming_transcribe.claim_latest
            data:
              name: "{{ name }}"
+             anchor_utterance_id: "{{ anchor_utterance_id | default('') }}"
    ```
 
    System-prompt snippet (includes the anti-overzealousness rules):
@@ -475,10 +487,12 @@ Three ways to resolve a pending voice:
    1. Najpierw normalnie obsłuż polecenie.
    2. Nie pytaj o tożsamość przy krótkich wypowiedziach (mniej niż ~5 słów).
    3. Zanim zapytasz, wywołaj narzędzie sprawdz_nieznany_glos; pytaj tylko gdy
-      should_ask jest true. Nie pytaj częściej niż raz na rozmowę.
+      should_ask jest true. Zapamiętaj zwrócone utterance_id. Nie pytaj
+      częściej niż raz na rozmowę.
    4. Pytaj: "Nie rozpoznaję Twojego głosu — kim jesteś? Przedstaw się pełnym
       zdaniem." Proś, by przedstawiła się sama osoba, której głosu nie rozpoznano.
-   5. Gdy osoba się przedstawi, wywołaj przypisz_glos z jej imieniem.
+   5. Gdy osoba się przedstawi, wywołaj przypisz_glos z jej imieniem i tym
+      utterance_id jako anchor_utterance_id.
    ```
 
    Known limitations (by design): a very short answer (< ~0.6 s, e.g. just "Anna")

@@ -45,18 +45,19 @@ class WyomingTranscribeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except Exception:
                 errors["base"] = "cannot_connect"
             else:
-                if token:
-                    # /settings is representative of the token-protected API.
-                    try:
-                        async with session.get(
-                            f"http://{host}:{port}/settings",
-                            headers={"X-API-Token": token},
-                            timeout=aiohttp.ClientTimeout(total=10),
-                        ) as response:
-                            if response.status == 401:
-                                errors["base"] = "invalid_auth"
-                    except Exception:
-                        errors["base"] = "cannot_connect"
+                # Always exercise a token-protected endpoint: /health is open,
+                # so a blank token against a protected server would otherwise
+                # create an entry whose every real call 401s.
+                try:
+                    async with session.get(
+                        f"http://{host}:{port}/settings",
+                        headers={"X-API-Token": token} if token else {},
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as response:
+                        if response.status == 401:
+                            errors["base"] = "invalid_auth"
+                except Exception:
+                    errors["base"] = "cannot_connect"
 
                 if not errors:
                     return self.async_create_entry(

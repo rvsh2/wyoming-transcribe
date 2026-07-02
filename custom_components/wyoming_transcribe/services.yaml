@@ -23,6 +23,12 @@ claim_utterance:
       default: true
       selector:
         boolean:
+    host:
+      name: Server host
+      description: Only needed when multiple Wyoming Transcribe servers are configured.
+      required: false
+      selector:
+        text:
 
 claim_latest:
   name: Claim latest utterance
@@ -54,6 +60,22 @@ claim_latest:
           min: 10
           max: 3600
           unit_of_measurement: s
+    anchor_utterance_id:
+      name: Anchor utterance id
+      description: >-
+        Utterance id returned by check_latest_voice. When set, exactly that
+        voice's cluster is claimed — immune to another unknown voice speaking
+        between the answer and this call. Recommended in the LLM flow.
+      required: false
+      example: "utt-1783024610953-c343d5e4"
+      selector:
+        text:
+    host:
+      name: Server host
+      description: Only needed when multiple Wyoming Transcribe servers are configured.
+      required: false
+      selector:
+        text:
 
 check_latest_voice:
   name: Check latest unrecognized voice
@@ -90,6 +112,12 @@ check_latest_voice:
           min: 10
           max: 3600
           unit_of_measurement: s
+    host:
+      name: Server host
+      description: Only needed when multiple Wyoming Transcribe servers are configured.
+      required: false
+      selector:
+        text:
 
 set_role:
   name: Set speaker role
@@ -110,3 +138,9 @@ set_role:
             - admin
             - user
             - guest
+    host:
+      name: Server host
+      description: Only needed when multiple Wyoming Transcribe servers are configured.
+      required: false
+      selector:
+        text:

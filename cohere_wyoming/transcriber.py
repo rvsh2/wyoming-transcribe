@@ -265,6 +265,9 @@ class CohereTranscriber:
         # Serializes inference (and model swaps in load()) so async transports
         # can safely offload transcribe_pcm to worker threads.
         self._inference_lock = threading.Lock()
+        # Consecutive transcription failures, maintained by the Wyoming handler
+        # to make persistent breakage visible despite empty-transcript replies.
+        self.failure_streak = 0
 
     def resolve_language(self, language: Optional[str]) -> str:
         """Resolve a requested language or fall back to the configured default."""
@@ -720,9 +723,15 @@ class CohereTranscriber:
         Diarize speaker indices restart at 0 in every generation window, so the
         same index in two windows usually names two different people. Each
         window-local speaker is matched to speakers from earlier windows by
-        ECAPA voiceprint similarity; without a confident match (or without the
-        embedding backend) it gets a fresh global index — over-splitting is
-        recoverable by enrollment naming, silently merging two people is not.
+        ECAPA voiceprint similarity; without a confident match it gets a fresh
+        global index — over-splitting is recoverable by enrollment naming,
+        silently merging two people is not.
+
+        Without the embedding backend (speaker ID disabled, or embedding
+        failure) the model's own indices are kept as-is across windows: a
+        single speaker then stays one "Mówca 0" instead of being shredded into
+        per-window speakers, at the cost of the (pre-existing) risk that two
+        different people sharing index 0 in different windows get merged.
         """
         windows = [window for window in windows if window]
         if not windows:
@@ -767,6 +776,12 @@ class CohereTranscriber:
                     )
                     use_embeddings = False
                     embeddings = {}
+
+            if not use_embeddings:
+                # No voiceprints to compare: preserve the model's raw indices
+                # (see docstring) instead of inventing fresh speakers.
+                merged.extend(window)
+                continue
 
             # Best-score-first unique assignment of window speakers to known ones.
             candidates: list[tuple[float, int, int]] = []

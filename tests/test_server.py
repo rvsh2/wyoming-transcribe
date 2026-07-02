@@ -353,7 +353,7 @@ class CohereTranscribeApiTests(unittest.TestCase):
                 # The newest clip (Anna's answer) anchors the claim; Bob's
                 # earlier interjection stays untouched.
                 response = self.run_async(
-                    server.claim_latest("Anna", include_cluster=True, max_age_seconds=300.0)
+                    server.claim_latest("Anna", include_cluster=True, max_age_seconds=300.0, anchor_utterance_id=None)
                 )
                 claim = self.decode_json_response(response)
                 self.assertEqual(set(claim["claimed"]), {id_anna1, id_anna2})
@@ -364,16 +364,123 @@ class CohereTranscribeApiTests(unittest.TestCase):
                 # Stale newest clip -> 409 (the answer was not buffered).
                 with self.assertRaises(HTTPException) as ctx:
                     self.run_async(
-                        server.claim_latest("Ktoś", include_cluster=True, max_age_seconds=0.0)
+                        server.claim_latest("Ktoś", include_cluster=True, max_age_seconds=0.0, anchor_utterance_id=None)
                     )
                 self.assertEqual(ctx.exception.status_code, 409)
 
                 pending.delete(id_bob)
                 with self.assertRaises(HTTPException) as ctx:
                     self.run_async(
-                        server.claim_latest("Ktoś", include_cluster=True, max_age_seconds=300.0)
+                        server.claim_latest("Ktoś", include_cluster=True, max_age_seconds=300.0, anchor_utterance_id=None)
                     )
                 self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_claim_latest_with_anchor_survives_interjection(self):
+        import tempfile
+
+        import numpy as np
+
+        from cohere_wyoming.enrollment import EnrollmentStore
+        from cohere_wyoming.pending import PendingStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingStore(tmp)
+            enrollment = EnrollmentStore(tmp)
+            anna = np.array([1.0, 0.0], dtype=np.float32)
+            tv = np.array([0.0, 1.0], dtype=np.float32)
+            t = np.arange(32000, dtype=np.float32) / 16000
+            clip = (0.1 * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32)
+            id_anna = pending.save(clip, 16000, text="jestem Anna", embedding=anna)
+            id_tv = pending.save(clip, 16000, text="reklama w tv", embedding=tv)
+
+            with patch.object(server, "pending_store", lambda: pending), patch.object(
+                server, "enrollment_store", lambda: enrollment
+            ):
+                # The TV clip is newer, but the anchor pins Anna's cluster.
+                response = self.run_async(
+                    server.claim_latest(
+                        "Anna",
+                        include_cluster=True,
+                        max_age_seconds=300.0,
+                        anchor_utterance_id=id_anna,
+                    )
+                )
+                claim = self.decode_json_response(response)
+                self.assertEqual(claim["claimed"], [id_anna])
+                self.assertEqual([c["id"] for c in pending.list_clips()], [id_tv])
+
+                with self.assertRaises(HTTPException) as ctx:
+                    self.run_async(
+                        server.claim_latest(
+                            "Anna",
+                            include_cluster=True,
+                            max_age_seconds=300.0,
+                            anchor_utterance_id="utt-1-00000000",
+                        )
+                    )
+                self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_claim_is_all_or_nothing_when_clip_vanishes(self):
+        import tempfile
+
+        import numpy as np
+
+        from cohere_wyoming.enrollment import EnrollmentStore
+        from cohere_wyoming.pending import PendingStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingStore(tmp)
+            enrollment = EnrollmentStore(tmp)
+            voice = np.array([1.0, 0.0], dtype=np.float32)
+            t = np.arange(32000, dtype=np.float32) / 16000
+            clip = (0.1 * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32)
+            id_a = pending.save(clip, 16000, text="a", embedding=voice)
+            id_b = pending.save(clip, 16000, text="b", embedding=voice)
+            # Simulate the ring buffer pruning clip B between cluster
+            # resolution and audio read (the mid-claim race).
+            pending.audio_path(id_b).unlink()
+
+            with patch.object(server, "pending_store", lambda: pending), patch.object(
+                server, "enrollment_store", lambda: enrollment
+            ), patch.object(pending, "cluster_members", return_value=[id_a, id_b]):
+                with self.assertRaises(HTTPException) as ctx:
+                    self.run_async(server.claim_pending("Anna", id_a, include_cluster=True))
+                self.assertEqual(ctx.exception.status_code, 404)
+
+            # Nothing was enrolled and the intact clip is still pending.
+            self.assertEqual(enrollment.list_speakers(), [])
+            self.assertIn(id_a, [c["id"] for c in pending.list_clips()])
+
+    def test_api_token_middleware_handles_non_ascii(self):
+        from fastapi.testclient import TestClient
+
+        with patch.object(server, "API_TOKEN", "sekret"):
+            client = TestClient(server.app)
+            # Non-ASCII client token (raw bytes on the wire) must yield 401,
+            # not a 500 TypeError from secrets.compare_digest.
+            response = client.get(
+                "/settings", headers={b"X-API-Token": "zażółć".encode("utf-8")}
+            )
+            self.assertEqual(response.status_code, 401)
+
+        # A non-ASCII server-side token can never match (headers are latin-1
+        # on the wire) but must degrade to 401s, not 500s.
+        with patch.object(server, "API_TOKEN", "zażółć-gęślą"):
+            client = TestClient(server.app)
+            self.assertEqual(client.get("/settings").status_code, 401)
+
+    def test_health_reports_asr_ready(self):
+        # Model "loaded" in this process (setUp patches it) -> asr_ready True
+        # without probing any port.
+        payload = self.decode_json_response(self.run_async(server.health()))
+        self.assertTrue(payload["asr_ready"])
+
+        with patch.object(server.service, "model", None), patch.object(
+            server, "WYOMING_PROBE_PORT", 1
+        ):
+            payload = self.decode_json_response(self.run_async(server.health()))
+        self.assertFalse(payload["asr_ready"])
+        self.assertFalse(payload["ready"])
 
     def test_export_import_roundtrip(self):
         import tarfile

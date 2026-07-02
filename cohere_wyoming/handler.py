@@ -124,10 +124,22 @@ class CohereWyomingEventHandler(AsyncEventHandler):
             # from the text and the "who are you?" enrollment flow needs it.
             if getattr(result, "utterance_id", None):
                 extra_data["utterance_id"] = result.utterance_id
+            self.transcriber.failure_streak = 0
         except Exception:
             # Always answer with a Transcript: without one Home Assistant's
             # voice pipeline hangs until its own timeout.
             LOGGER.exception("Transcription failed; returning an empty transcript")
+            # Empty transcripts make failures invisible to the voice pipeline
+            # ("I didn't understand"), so make persistent breakage loud here.
+            streak = getattr(self.transcriber, "failure_streak", 0) + 1
+            self.transcriber.failure_streak = streak
+            if streak >= 3:
+                LOGGER.error(
+                    "%d consecutive transcription failures - the ASR server is "
+                    "likely broken (check the model / a failed /load), while HA "
+                    "only sees empty transcripts",
+                    streak,
+                )
 
         event = Transcript(text=text, language=language).event()
         event.data.update(extra_data)

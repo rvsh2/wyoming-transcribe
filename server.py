@@ -253,6 +253,27 @@ def health_payload() -> dict:
     return service.health_payload()
 
 
+# Where the Wyoming ASR process listens (same container in the shipped
+# deployment); lets the --no-load-model UI process report real ASR readiness.
+WYOMING_PROBE_HOST = os.environ.get("WYOMING_PROBE_HOST", "127.0.0.1")
+WYOMING_PROBE_PORT = int(os.environ.get("WYOMING_PROBE_PORT", "10300"))
+
+
+async def _probe_asr_ready() -> bool:
+    """True when this process has the model, or the Wyoming port accepts."""
+    if service.is_loaded():
+        return True
+    try:
+        _reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(WYOMING_PROBE_HOST, WYOMING_PROBE_PORT),
+            timeout=1.0,
+        )
+        writer.close()
+        return True
+    except Exception:
+        return False
+
+
 def render_supported_language_badges() -> str:
     return "".join(
         f'<span class="badge">{html.escape(lang)}</span>'
@@ -370,6 +391,13 @@ app = FastAPI(
 # open as a static info page and "/health" must stay open for the container
 # healthcheck.
 API_TOKEN = os.environ.get("API_TOKEN", "").strip() or None
+if API_TOKEN is not None and not API_TOKEN.isascii():
+    # HTTP headers are latin-1 on the wire, so a non-ASCII token can never
+    # match what clients send — every request would 401. Warn loudly.
+    logger.warning(
+        "API_TOKEN contains non-ASCII characters; clients will not be able to "
+        "authenticate. Use an ASCII-only token."
+    )
 OPEN_PATHS = {"/", "/health"}
 
 
@@ -381,7 +409,11 @@ async def require_api_token(request: Request, call_next):
             authorization = request.headers.get("authorization", "")
             if authorization.lower().startswith("bearer "):
                 provided = authorization[7:]
-        if not secrets.compare_digest(provided, API_TOKEN):
+        # Compare as bytes: compare_digest on str raises TypeError for
+        # non-ASCII input, which would turn an auth failure into a 500.
+        if not secrets.compare_digest(
+            provided.encode("utf-8"), API_TOKEN.encode("utf-8")
+        ):
             return JSONResponse(
                 {"detail": "Invalid or missing API token"}, status_code=401
             )
@@ -395,7 +427,13 @@ async def index():
 
 @app.get("/health")
 async def health():
-    return JSONResponse(health_payload())
+    payload = health_payload()
+    # "ready" describes THIS process's model; "asr_ready" answers the question
+    # monitoring actually asks — is speech-to-text serving? In the shipped
+    # docker setup this process runs --no-load-model and the Wyoming process
+    # owns the model, so the flag comes from probing its port.
+    payload["asr_ready"] = await _probe_asr_ready()
+    return JSONResponse(payload)
 
 
 @app.post("/inference")
@@ -621,20 +659,35 @@ async def delete_pending(utterance_id: str):
 
 
 def _claim_clips(name: str, utterance_id: str, include_cluster: bool) -> JSONResponse:
-    """Enroll a pending clip (and optionally its voice cluster) as samples."""
+    """Enroll a pending clip (and optionally its voice cluster) as samples.
+
+    Two-phase to avoid half-applied claims: all clip audio is read (and thus
+    validated) before any sample is written, so a clip pruned concurrently by
+    the ring buffer fails the whole claim instead of leaving part of the
+    cluster enrolled while reporting an error. Pending deletion happens last
+    and is best-effort — a retry then re-claims to the same person, which is
+    idempotent in effect (duplicate samples of the same voice).
+    """
     store = pending_store()
     enrollment = enrollment_store()
     try:
         ids = store.cluster_members(utterance_id) if include_cluster else [utterance_id]
-        samples = []
-        for clip_id in ids:
-            audio_bytes = store.audio_path(clip_id).read_bytes()
-            samples.append(enrollment.add_sample(name, audio_bytes, f"{clip_id}.wav"))
-            store.delete(clip_id)
+        payloads = [
+            (clip_id, store.audio_path(clip_id).read_bytes()) for clip_id in ids
+        ]
+        samples = [
+            enrollment.add_sample(name, audio_bytes, f"{clip_id}.wav")
+            for clip_id, audio_bytes in payloads
+        ]
     except PendingError as err:
         raise HTTPException(status_code=404, detail=str(err)) from err
     except EnrollmentError as err:
         raise HTTPException(status_code=400, detail=str(err)) from err
+    for clip_id in ids:
+        try:
+            store.delete(clip_id)
+        except PendingError:
+            pass
     return JSONResponse(
         {"status": "ok", "name": name, "claimed": ids, "samples": samples}
     )
@@ -655,16 +708,25 @@ async def claim_latest(
     name: str,
     include_cluster: bool = Form(True),
     max_age_seconds: float = Form(300.0),
+    anchor_utterance_id: Optional[str] = Form(None),
 ):
     """Enroll the most recent unrecognized utterance (with its voice cluster).
 
-    Voice-anchored "who are you?" flow for LLM pipelines: right after an
-    unknown speaker answers with their name, the newest pending clip is that
-    answer, and its cluster covers everything that voice said — so no
-    utterance_id has to travel through the pipeline. max_age_seconds guards
-    against claiming a stale clip when the answer was too short to be
+    Voice-anchored "who are you?" flow for LLM pipelines. When
+    anchor_utterance_id is given (the id returned by the latest-voice check
+    that triggered the question), that clip's cluster is claimed — immune to
+    another unknown voice interjecting between the answer and this call.
+    Without an anchor the newest pending clip is used, and max_age_seconds
+    guards against claiming a stale clip when the answer was too short to be
     buffered.
     """
+    if anchor_utterance_id:
+        try:
+            pending_store().get_meta(anchor_utterance_id)
+        except PendingError as err:
+            raise HTTPException(status_code=404, detail=str(err)) from err
+        return _claim_clips(name, anchor_utterance_id, include_cluster)
+
     clips = pending_store().list_clips()
     if not clips:
         raise HTTPException(status_code=404, detail="No pending utterances to claim")

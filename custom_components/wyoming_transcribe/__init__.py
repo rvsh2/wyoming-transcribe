@@ -58,6 +58,7 @@ CLAIM_UTTERANCE_SCHEMA = vol.Schema(
         vol.Required("name"): cv.string,
         vol.Required("utterance_id"): cv.string,
         vol.Optional("include_cluster", default=True): cv.boolean,
+        vol.Optional("host"): cv.string,
     }
 )
 CLAIM_LATEST_SCHEMA = vol.Schema(
@@ -65,6 +66,8 @@ CLAIM_LATEST_SCHEMA = vol.Schema(
         vol.Required("name"): cv.string,
         vol.Optional("include_cluster", default=True): cv.boolean,
         vol.Optional("max_age_seconds", default=300): vol.Coerce(float),
+        vol.Optional("anchor_utterance_id"): cv.string,
+        vol.Optional("host"): cv.string,
     }
 )
 CHECK_LATEST_VOICE_SCHEMA = vol.Schema(
@@ -72,12 +75,14 @@ CHECK_LATEST_VOICE_SCHEMA = vol.Schema(
         vol.Optional("min_utterances", default=3): vol.Coerce(int),
         vol.Optional("min_seconds", default=8): vol.Coerce(float),
         vol.Optional("max_age_seconds", default=300): vol.Coerce(float),
+        vol.Optional("host"): cv.string,
     }
 )
 SET_ROLE_SCHEMA = vol.Schema(
     {
         vol.Required("name"): cv.string,
         vol.Required("role"): vol.In(["admin", "user", "guest"]),
+        vol.Optional("host"): cv.string,
     }
 )
 
@@ -87,9 +92,35 @@ def base_url(entry: ConfigEntry) -> str:
 
 
 def _first_runtime(hass: HomeAssistant) -> dict:
+    """First configured server — used by the proxy/panel, which manages a
+    single server by design (the panel has no server switcher yet)."""
     runtimes = hass.data.get(DOMAIN) or {}
     if not runtimes:
         raise HomeAssistantError("No Wyoming Transcribe server is configured")
+    return next(iter(runtimes.values()))
+
+
+def _runtime_for(hass: HomeAssistant, host: str | None) -> dict:
+    """Resolve the target server for a service call.
+
+    With one entry the choice is obvious; with several the caller must name
+    the server via the optional `host` field — silently picking the first one
+    could claim a pending voice from the wrong house/server.
+    """
+    runtimes = hass.data.get(DOMAIN) or {}
+    if not runtimes:
+        raise HomeAssistantError("No Wyoming Transcribe server is configured")
+    if host:
+        for runtime in runtimes.values():
+            if runtime.get("host") == host:
+                return runtime
+        raise HomeAssistantError(f"No Wyoming Transcribe server configured for host '{host}'")
+    if len(runtimes) > 1:
+        hosts = ", ".join(sorted(r.get("host", "?") for r in runtimes.values()))
+        raise HomeAssistantError(
+            f"Multiple Wyoming Transcribe servers are configured ({hosts}); "
+            "pass the 'host' field to select one"
+        )
     return next(iter(runtimes.values()))
 
 
@@ -178,7 +209,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
 
     async def handle_claim_utterance(call: ServiceCall) -> None:
         """Enroll a pending utterance (and its voice cluster) as a person."""
-        runtime = _first_runtime(hass)
+        runtime = _runtime_for(hass, call.data.get("host"))
         name = quote(call.data["name"], safe="")
         utterance_id = quote(call.data["utterance_id"], safe="")
         await _api_post(
@@ -190,20 +221,20 @@ def _async_register_services(hass: HomeAssistant) -> None:
     async def handle_claim_latest(call: ServiceCall) -> None:
         """Enroll the newest unrecognized utterance (voice-anchored claim).
 
-        Designed as an LLM tool for the "who are you?" flow: no utterance_id
-        needed — the newest pending clip is the answer that just happened, and
-        its voice cluster covers everything that person said.
+        Designed as an LLM tool for the "who are you?" flow. Pass
+        anchor_utterance_id (from check_latest_voice) to claim exactly the
+        voice that triggered the question — immune to another unknown voice
+        interjecting between the answer and this call.
         """
-        runtime = _first_runtime(hass)
+        runtime = _runtime_for(hass, call.data.get("host"))
         name = quote(call.data["name"], safe="")
-        await _api_post(
-            runtime,
-            f"/speakers/{name}/samples/from-latest",
-            {
-                "include_cluster": "true" if call.data["include_cluster"] else "false",
-                "max_age_seconds": call.data["max_age_seconds"],
-            },
-        )
+        fields = {
+            "include_cluster": "true" if call.data["include_cluster"] else "false",
+            "max_age_seconds": call.data["max_age_seconds"],
+        }
+        if call.data.get("anchor_utterance_id"):
+            fields["anchor_utterance_id"] = call.data["anchor_utterance_id"]
+        await _api_post(runtime, f"/speakers/{name}/samples/from-latest", fields)
 
     async def handle_check_latest_voice(call: ServiceCall) -> dict:
         """Regular-visitor check for the LLM "who are you?" flow.
@@ -212,12 +243,13 @@ def _async_register_services(hass: HomeAssistant) -> None:
         should_ask verdict, so the agent only interrogates voices that have
         actually talked to the system a few times.
         """
-        runtime = _first_runtime(hass)
+        runtime = _runtime_for(hass, call.data.get("host"))
         silent = {
             "should_ask": False,
             "utterances": 0,
             "seconds": 0.0,
             "newest_age_seconds": None,
+            "utterance_id": None,
             "reason": "no_pending_voice",
         }
         try:
@@ -249,11 +281,14 @@ def _async_register_services(hass: HomeAssistant) -> None:
             "utterances": stats["utterances"],
             "seconds": stats["seconds"],
             "newest_age_seconds": stats["newest_age_seconds"],
+            # Anchor for claim_latest: enrolls exactly this voice's cluster
+            # even if another unknown voice speaks before the claim happens.
+            "utterance_id": stats.get("utterance_id"),
             "reason": reason,
         }
 
     async def handle_set_role(call: ServiceCall) -> None:
-        runtime = _first_runtime(hass)
+        runtime = _runtime_for(hass, call.data.get("host"))
         name = quote(call.data["name"], safe="")
         await _api_post(runtime, f"/speakers/{name}/role", {"role": call.data["role"]})
 
@@ -348,6 +383,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
         "coordinator": coordinator,
         "base": base,
+        "host": entry.data[CONF_HOST],
         "headers": headers,
         "session": session,
     }
