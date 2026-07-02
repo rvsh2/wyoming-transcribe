@@ -316,6 +316,227 @@ class AudioAndTranscriberTests(unittest.TestCase):
         fake_model.generate.assert_not_called()
 
 
+class SpeakerTextAndIdentificationTests(unittest.TestCase):
+    def test_render_speaker_text_modes(self):
+        from cohere_wyoming.transcriber import render_speaker_text
+
+        segments = [
+            {"speaker": 0, "name": "Krzysztof", "start": 0.0, "end": 1.0, "text": "zgaś"},
+            {"speaker": 0, "name": "Krzysztof", "start": 1.0, "end": 2.0, "text": "światło"},
+            {"speaker": 1, "start": 2.0, "end": 3.0, "text": "dobranoc"},
+        ]
+
+        self.assertEqual(
+            render_speaker_text(segments, mode="prefix"),
+            "Krzysztof: zgaś światło\nMówca 1: dobranoc",
+        )
+        self.assertEqual(
+            render_speaker_text(segments, mode="both"),
+            "Krzysztof: zgaś światło\nMówca 1: dobranoc",
+        )
+        self.assertEqual(
+            render_speaker_text(segments, mode="field"),
+            "zgaś światło\ndobranoc",
+        )
+
+    def test_identify_speakers_concatenates_per_speaker(self):
+        from cohere_wyoming.speaker_id import SpeakerMatch
+
+        transcriber = CohereTranscriber()
+        received_clips = []
+
+        class FakeRegistry:
+            enabled = True
+
+            def reload_if_changed(self):
+                return False
+
+            def has_profiles(self):
+                return True
+
+            def identify_batch(self, clips):
+                received_clips.extend(clips)
+                return [SpeakerMatch("Krzysztof", 0.8), SpeakerMatch(None, 0.1)]
+
+        transcriber.speaker_registry = FakeRegistry()
+        # Two sub-0.4s segments for speaker 0 (individually too short for a
+        # voiceprint) and one for speaker 1.
+        segments = [
+            {"speaker": 0, "start": 0.0, "end": 0.3, "text": "zgaś"},
+            {"speaker": 1, "start": 0.4, "end": 0.6, "text": "co?"},
+            {"speaker": 0, "start": 0.7, "end": 1.0, "text": "światło"},
+        ]
+        audio = np.arange(16000, dtype=np.float32)
+
+        transcriber._identify_speakers(segments, audio, 16000)
+
+        # One clip per speaker: speaker 0's clip concatenates both its segments.
+        self.assertEqual(len(received_clips), 2)
+        self.assertEqual(len(received_clips[0]), int(0.3 * 16000) + int(0.3 * 16000))
+        self.assertEqual(len(received_clips[1]), int(0.2 * 16000))
+        # The name lands on all of speaker 0's segments, none on speaker 1's.
+        self.assertEqual(segments[0].get("name"), "Krzysztof")
+        self.assertEqual(segments[2].get("name"), "Krzysztof")
+        self.assertIsNone(segments[1].get("name"))
+
+    def test_dominant_speaker_prefers_most_speech_time(self):
+        segments = [
+            {"speaker": 0, "name": "Krzysztof", "score": 0.8, "start": 0.0, "end": 5.0, "text": "a"},
+            {"speaker": 1, "name": "Anna", "score": 0.7, "start": 5.0, "end": 6.0, "text": "b"},
+        ]
+        name, score = CohereTranscriber._dominant_speaker(segments)
+        self.assertEqual(name, "Krzysztof")
+        self.assertEqual(score, 0.8)
+
+    def test_dominant_speaker_unrecognized_returns_none(self):
+        segments = [{"speaker": 0, "start": 0.0, "end": 5.0, "text": "a"}]
+        name, score = CohereTranscriber._dominant_speaker(segments)
+        self.assertIsNone(name)
+        self.assertIsNone(score)
+
+
+class MergeDiarizedWindowsTests(unittest.TestCase):
+    """Speaker indices restart per window; merging must remap them globally."""
+
+    @staticmethod
+    def _window(speaker: int, start: float, end: float, text: str) -> list[dict]:
+        return [{"speaker": speaker, "start": start, "end": end, "text": text}]
+
+    @staticmethod
+    def _registry(embeddings_per_call: list[list[np.ndarray]]):
+        calls = iter(embeddings_per_call)
+        return SimpleNamespace(enabled=True, embed_batch=lambda clips: next(calls))
+
+    def test_different_voices_in_two_windows_get_distinct_speakers(self):
+        transcriber = CohereTranscriber()
+        transcriber.speaker_registry = self._registry(
+            [
+                [np.array([1.0, 0.0], dtype=np.float32)],
+                [np.array([0.0, 1.0], dtype=np.float32)],
+            ]
+        )
+        windows = [
+            self._window(0, 0.0, 10.0, "alice speaking"),
+            self._window(0, 35.0, 45.0, "bob speaking"),
+        ]
+
+        merged = transcriber._merge_diarized_windows(
+            windows, np.zeros(70 * 16000, dtype=np.float32), 16000
+        )
+
+        self.assertEqual([segment["speaker"] for segment in merged], [0, 1])
+
+    def test_same_voice_in_two_windows_keeps_one_speaker(self):
+        transcriber = CohereTranscriber()
+        voice = np.array([0.6, 0.8], dtype=np.float32)
+        transcriber.speaker_registry = self._registry([[voice], [voice.copy()]])
+        windows = [
+            self._window(0, 0.0, 10.0, "alice part one"),
+            self._window(0, 35.0, 45.0, "alice part two"),
+        ]
+
+        merged = transcriber._merge_diarized_windows(
+            windows, np.zeros(70 * 16000, dtype=np.float32), 16000
+        )
+
+        self.assertEqual([segment["speaker"] for segment in merged], [0, 0])
+
+    def test_without_registry_windows_never_share_speakers(self):
+        transcriber = CohereTranscriber()
+        transcriber.speaker_registry = None
+        windows = [
+            self._window(0, 0.0, 10.0, "first window"),
+            self._window(0, 35.0, 45.0, "second window"),
+        ]
+
+        merged = transcriber._merge_diarized_windows(
+            windows, np.zeros(70 * 16000, dtype=np.float32), 16000
+        )
+
+        # Conservative fallback: never merge two windows' speakers blindly.
+        self.assertEqual([segment["speaker"] for segment in merged], [0, 1])
+
+    def test_embedding_failure_falls_back_to_fresh_indices(self):
+        transcriber = CohereTranscriber()
+
+        def broken_embed(_clips):
+            raise RuntimeError("no speechbrain")
+
+        transcriber.speaker_registry = SimpleNamespace(enabled=True, embed_batch=broken_embed)
+        windows = [
+            self._window(0, 0.0, 10.0, "first window"),
+            self._window(0, 35.0, 45.0, "second window"),
+        ]
+
+        merged = transcriber._merge_diarized_windows(
+            windows, np.zeros(70 * 16000, dtype=np.float32), 16000
+        )
+
+        self.assertEqual([segment["speaker"] for segment in merged], [0, 1])
+
+    def test_two_speakers_per_window_are_matched_pairwise(self):
+        transcriber = CohereTranscriber()
+        alice = np.array([1.0, 0.0], dtype=np.float32)
+        bob = np.array([0.0, 1.0], dtype=np.float32)
+        # Window 2 hears them in reverse local order (bob=0, alice=1).
+        transcriber.speaker_registry = self._registry([[alice, bob], [bob, alice]])
+        windows = [
+            self._window(0, 0.0, 5.0, "alice") + self._window(1, 5.0, 10.0, "bob"),
+            self._window(0, 35.0, 40.0, "bob again") + self._window(1, 40.0, 45.0, "alice again"),
+        ]
+
+        merged = transcriber._merge_diarized_windows(
+            windows, np.zeros(70 * 16000, dtype=np.float32), 16000
+        )
+
+        self.assertEqual([segment["speaker"] for segment in merged], [0, 1, 1, 0])
+
+
+class TranscribeWindowTruncationTests(unittest.TestCase):
+    def test_truncated_window_is_split_and_retried(self):
+        transcriber = CohereTranscriber()
+        calls = []
+
+        def fake_generate(chunk, _sample_rate, _language, _temperature):
+            calls.append(len(chunk))
+            if len(chunk) > 16000 * 20:
+                return "<|diarize|>ignored", True
+            return (
+                "<|diarize|><|spltoken0|><|t:0.0|> part <|t:1.0|><|endoftext|>",
+                False,
+            )
+
+        with patch.object(transcriber, "_generate_diarized", side_effect=fake_generate):
+            windows = transcriber._transcribe_window(
+                np.zeros(30 * 16000, dtype=np.float32), 60.0, 16000, "pl", 0.0
+            )
+
+        # One truncated 30s pass retried as two 15s passes.
+        self.assertEqual(calls, [30 * 16000, 15 * 16000, 15 * 16000])
+        self.assertEqual(len(windows), 2)
+        # Offsets stay on the global timeline.
+        self.assertEqual(windows[0][0]["start"], 60.0)
+        self.assertEqual(windows[1][0]["start"], 75.0)
+
+    def test_truncated_short_window_is_kept_with_warning(self):
+        transcriber = CohereTranscriber()
+
+        def fake_generate(_chunk, _sample_rate, _language, _temperature):
+            return (
+                "<|diarize|><|spltoken0|><|t:0.0|> dense speech <|t:1.0|>",
+                True,
+            )
+
+        with patch.object(transcriber, "_generate_diarized", side_effect=fake_generate):
+            with self.assertLogs("cohere-wyoming.transcriber", level="WARNING") as logs:
+                windows = transcriber._transcribe_window(
+                    np.zeros(10 * 16000, dtype=np.float32), 0.0, 16000, "pl", 0.0
+                )
+
+        self.assertEqual(len(windows), 1)
+        self.assertTrue(any("token cap" in message for message in logs.output))
+
+
 class PromptTokenTests(unittest.TestCase):
     def _transcriber(self, known: dict) -> CohereTranscriber:
         transcriber = CohereTranscriber(default_language="pl")

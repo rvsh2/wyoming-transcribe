@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Optional
@@ -88,18 +89,40 @@ class CohereWyomingEventHandler(AsyncEventHandler):
             return
 
         pcm_audio = b"".join(self.audio_chunks)
-        audio_data, sample_rate = pcm16le_to_float32(
-            pcm_audio,
-            sample_rate=self.audio_state.sample_rate,
-            channels=self.audio_state.channels,
-            width=self.audio_state.width,
-        )
-        result = self.transcriber.transcribe_pcm(
-            audio_data,
-            sample_rate=sample_rate,
-            language=self.requested_language,
-        )
-        await self.write_event(
-            Transcript(text=result.text, language=result.language).event()
-        )
         self.audio_chunks.clear()
+
+        text = ""
+        language = self.requested_language
+        speaker: dict = {}
+        try:
+            audio_data, sample_rate = pcm16le_to_float32(
+                pcm_audio,
+                sample_rate=self.audio_state.sample_rate,
+                channels=self.audio_state.channels,
+                width=self.audio_state.width,
+            )
+            # Inference takes seconds; run it off the event loop so other
+            # connections (describe probes, a second satellite) stay served.
+            result = await asyncio.to_thread(
+                self.transcriber.transcribe_pcm,
+                audio_data,
+                sample_rate=sample_rate,
+                language=self.requested_language,
+            )
+            text = result.text
+            language = result.language
+            # In "field"/"both" mode the dominant speaker's enrolled name rides
+            # along in the event data; HA ignores unknown keys, custom pipeline
+            # components can consume it.
+            if getattr(result, "text_mode", "prefix") in ("field", "both"):
+                speaker = {"speaker": result.speaker}
+                if result.speaker_score is not None:
+                    speaker["speaker_score"] = result.speaker_score
+        except Exception:
+            # Always answer with a Transcript: without one Home Assistant's
+            # voice pipeline hangs until its own timeout.
+            LOGGER.exception("Transcription failed; returning an empty transcript")
+
+        event = Transcript(text=text, language=language).event()
+        event.data.update(speaker)
+        await self.write_event(event)

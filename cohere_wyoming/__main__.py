@@ -142,9 +142,25 @@ async def serve(args: argparse.Namespace) -> None:
 
         import numpy as _np
 
+        from .audio import pcm16le_to_float32
+
+        # Warm the full request path with realistic input so the first real
+        # request does not pay for lazy loads and shape-dependent CUDA work:
+        # PCM conversion + 48 kHz stereo resample (soxr init), Silero VAD load,
+        # and a full-length (30 s) generate pass.
+        _t = _time.time()
+        _pcm = (_np.random.randn(48000 * 2 * 2) * 300).astype("<i2").tobytes()
+        pcm16le_to_float32(_pcm, sample_rate=48000, channels=2, width=2)
+        LOGGER.info("Audio conversion warmup done in %.1fs", _time.time() - _t)
+
         _t = _time.time()
         _dummy = (_np.random.randn(16000).astype("float32") * 0.02)
-        transcriber._generate_diarized(_dummy, 16000, transcriber.default_language, 0.0)
+        transcriber.vad_detector.detect_speech(_dummy, sample_rate=16000)
+        LOGGER.info("VAD warmup done in %.1fs", _time.time() - _t)
+
+        _t = _time.time()
+        _dummy_full = (_np.random.randn(30 * 16000).astype("float32") * 0.02)
+        transcriber._generate_diarized(_dummy_full, 16000, transcriber.default_language, 0.0)
         LOGGER.info("ASR model warmup done in %.1fs", _time.time() - _t)
     except Exception as error:  # warmup must never block serving
         LOGGER.warning("ASR model warmup failed (continuing): %s", error)

@@ -1,5 +1,67 @@
 # Release Notes
 
+## 2026-07-02
+
+### QA review fixes (10 findings, multi-agent review)
+
+- **Security**: the unauthenticated management API (port `8580`) is published on
+  `127.0.0.1` only; README documents SSH tunneling for remote UI access.
+- **Speaker misattribution in recordings > 30 s**: diarization speaker indices restart
+  in every 30 s window; they are now remapped onto one global speaker space by ECAPA
+  voiceprint matching (`SPEAKER_CHAIN_THRESHOLD`, default `0.40`). Without a confident
+  match a window's speaker gets a fresh index — never silently merged.
+- **Event-loop blocking**: model inference runs via `asyncio.to_thread` in both the
+  Wyoming handler and the FastAPI endpoints (`/inference`, `/v1/audio/transcriptions`,
+  `/load`), serialized by an inference lock; concurrent satellites and health probes
+  stay responsive during transcription.
+- **Robustness**: the Wyoming finalize path always answers with a `Transcript` (empty
+  on error) instead of dying silently; HA's pipeline no longer hangs until timeout.
+- **Container supervision**: `docker-entrypoint.sh` supervises both processes (the old
+  EXIT trap was dead code after `exec`); if either dies the container exits and
+  Docker's restart policy brings the pair back. The compose healthcheck is restored.
+- **Silent transcript truncation**: hitting the 400-token generation cap is detected;
+  the window is retried as two shorter ones (warning logged).
+- **UI**: the Transcribe form is disabled with an explanatory notice when the process
+  runs with `--no-load-model` (it always returned 503 in the Docker deployment).
+- **SRT/VTT**: one cue per diarized segment with speaker labels and real timestamps
+  (previously a single whole-file cue).
+- `requirements.txt` synced with `pyproject.toml` (adds `torchaudio`, `silero-vad`,
+  `speechbrain`).
+- Dockerfile installs dependencies before copying source — code changes no longer
+  invalidate the torch-sized layer (rebuild: seconds instead of minutes).
+
+### Speaker identity for the HA pipeline
+
+- New `SPEAKER_TEXT_MODE` (`prefix` | `field` | `both`, default `prefix`), switchable
+  at runtime from the new UI settings card; shared with the Wyoming process via
+  `.settings.json` in the enrollment dir, applied on the next transcription.
+- In `field`/`both` mode the Wyoming `Transcript` event carries `speaker` (enrolled
+  name of the dominant speaker or `null`) and `speaker_score`; `verbose_json` exposes
+  them in all modes.
+- Identification is now done once per diarized speaker on the concatenation of all
+  their segments (voice commands are often split into sub-0.4 s segments too short
+  for a voiceprint on their own), and the dominant speaker (most speech time) is
+  reported per utterance.
+
+### Management API auth
+
+- Optional `API_TOKEN` env: when set, every endpoint except `/` and `/health` requires
+  `X-API-Token` or `Authorization: Bearer`; the UI stores the token in the browser.
+
+### Startup
+
+- The full request path is warmed at startup: audio conversion/resample (librosa/soxr
+  lazy init — measured 24 s in the container), Silero VAD load, and a full-length 30 s
+  generate pass. First request after a cold start: **0.7 s** (previously ~25 s).
+
+### Verification
+
+- `93` unit tests pass (new suites: settings store, window merging, truncation split,
+  token auth, speaker-field events).
+- Live-tested on `docker compose up` (RTX 3090): cross-window speaker chaining on 50 s
+  audio, `describe` answered in 0.00 s during a 29 s transcription, container restart
+  after killing the UI process, mode switching without restart, token auth.
+
 ## 2026-06-22
 
 ### Speaker Diarization Engine

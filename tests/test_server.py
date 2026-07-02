@@ -166,6 +166,111 @@ class CohereTranscribeApiTests(unittest.TestCase):
         self.assertIn("00:00:01,250", srt_response.body.decode("utf-8"))
         self.assertTrue(vtt_response.body.decode("utf-8").startswith("WEBVTT"))
 
+    def test_index_page_marks_asr_available_when_model_loaded(self):
+        response = self.run_async(server.index())
+        self.assertIn("const ASR_AVAILABLE = true;", response)
+        self.assertNotIn("__ASR_AVAILABLE__", response)
+
+    def test_index_page_marks_asr_unavailable_without_model(self):
+        with patch.object(server.service, "model", None):
+            response = self.run_async(server.index())
+        self.assertIn("const ASR_AVAILABLE = false;", response)
+
+    def test_srt_and_vtt_render_one_cue_per_diarized_segment(self):
+        result = {
+            "text": "alice: hej\nMówca 1: cześć",
+            "language": "pl",
+            "duration": 10.0,
+            "processing_time": 0.1,
+            "segments": [
+                {"speaker": 0, "name": "alice", "start": 0.0, "end": 2.5, "text": "hej"},
+                {"speaker": 1, "start": 3.0, "end": 4.0, "text": "cześć"},
+            ],
+        }
+
+        srt = server.format_subtitles(result, srt=True)
+        self.assertEqual(
+            srt,
+            "1\n00:00:00,000 --> 00:00:02,500\nalice: hej\n\n"
+            "2\n00:00:03,000 --> 00:00:04,000\nMówca 1: cześć\n\n",
+        )
+
+        vtt = server.format_subtitles(result, srt=False)
+        self.assertTrue(vtt.startswith("WEBVTT\n\n"))
+        self.assertIn("00:00:00.000 --> 00:00:02.500\nalice: hej", vtt)
+        self.assertIn("00:00:03.000 --> 00:00:04.000\nMówca 1: cześć", vtt)
+
+    def test_subtitles_fall_back_to_single_cue_without_segments(self):
+        result = {"text": "hello world", "language": "en", "duration": 1.25}
+        srt = server.format_subtitles(result, srt=True)
+        self.assertEqual(srt, "1\n00:00:00,000 --> 00:00:01,250\nhello world\n\n")
+
+    def test_settings_endpoints_roundtrip(self):
+        import tempfile
+        from pathlib import Path
+
+        from cohere_wyoming.settings import SettingsStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SettingsStore(Path(tmp) / ".settings.json")
+            with patch.object(server.service, "settings_store", store):
+                payload = self.decode_json_response(self.run_async(server.get_settings()))
+                self.assertEqual(payload["speaker_text_mode"], "prefix")
+                self.assertEqual(payload["speaker_text_modes"], ["prefix", "field", "both"])
+
+                response = self.run_async(server.update_settings(speaker_text_mode="field"))
+                self.assertEqual(self.decode_json_response(response)["speaker_text_mode"], "field")
+
+                payload = self.decode_json_response(self.run_async(server.get_settings()))
+                self.assertEqual(payload["speaker_text_mode"], "field")
+
+                with self.assertRaises(HTTPException) as ctx:
+                    self.run_async(server.update_settings(speaker_text_mode="bogus"))
+                self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_api_token_middleware(self):
+        from fastapi.testclient import TestClient
+
+        with patch.object(server, "API_TOKEN", "sekret"):
+            client = TestClient(server.app)
+            # Open paths stay reachable for the healthcheck and info page.
+            self.assertEqual(client.get("/health").status_code, 200)
+            # Protected path without/with the token.
+            self.assertEqual(client.get("/settings").status_code, 401)
+            self.assertEqual(
+                client.get("/settings", headers={"X-API-Token": "zly"}).status_code, 401
+            )
+            self.assertEqual(
+                client.get("/settings", headers={"X-API-Token": "sekret"}).status_code, 200
+            )
+            self.assertEqual(
+                client.get(
+                    "/settings", headers={"Authorization": "Bearer sekret"}
+                ).status_code,
+                200,
+            )
+
+    def test_verbose_json_includes_dominant_speaker(self):
+        mocked_result = SimpleNamespace(
+            asdict=lambda: {
+                "text": "Krzysztof: zgaś światło",
+                "language": "pl",
+                "duration": 2.0,
+                "processing_time": 0.1,
+                "speaker": "Krzysztof",
+                "speaker_score": 0.82,
+                "segments": [
+                    {"speaker": 0, "name": "Krzysztof", "start": 0.0, "end": 2.0, "text": "zgaś światło"}
+                ],
+            }
+        )
+        with patch.object(server.service, "transcribe_pcm", return_value=mocked_result):
+            response = self.call_inference(response_format="verbose_json")
+
+        payload = self.decode_json_response(response)
+        self.assertEqual(payload["speaker"], "Krzysztof")
+        self.assertEqual(payload["speaker_score"], 0.82)
+
     def test_openai_endpoint_returns_verbose_json(self):
         mocked_result = SimpleNamespace(
             asdict=lambda: {

@@ -13,16 +13,21 @@ ENV PATH="/root/.local/bin:${PATH}"
 
 WORKDIR /app
 
-COPY pyproject.toml uv.lock README.md ./
+# Install third-party dependencies before copying the source so code changes
+# do not invalidate the (torch-sized) dependency layer.
+COPY pyproject.toml uv.lock ./
+RUN uv venv --python 3.11 /app/.venv && \
+    UV_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu124 \
+    VIRTUAL_ENV=/app/.venv uv sync --locked --no-dev --no-install-project
+
+COPY README.md ./
 COPY cohere_wyoming ./cohere_wyoming
 COPY server.py ./server.py
 COPY docker-entrypoint.sh ./docker-entrypoint.sh
 
-RUN uv venv --python 3.11 /app/.venv && \
-    UV_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu124 \
-    VIRTUAL_ENV=/app/.venv uv sync --locked --no-dev
-
-RUN chmod +x /app/docker-entrypoint.sh
+RUN UV_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu124 \
+    VIRTUAL_ENV=/app/.venv uv sync --locked --no-dev && \
+    chmod +x /app/docker-entrypoint.sh
 
 ENV PATH="/app/.venv/bin:${PATH}"
 ENV VIRTUAL_ENV="/app/.venv"

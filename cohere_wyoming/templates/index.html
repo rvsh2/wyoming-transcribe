@@ -201,6 +201,11 @@
 
     <div class="card">
         <h2>Quick Transcription</h2>
+        <div id="asr-unavailable" class="hint" style="display: none; padding: 0.6rem 0.8rem; border: 1px solid #d9822b; border-radius: 6px; margin-bottom: 1rem;">
+            The ASR model is not loaded in this process (enrollment-only mode), so
+            HTTP transcription is unavailable here. Speech-to-text for Home Assistant
+            runs in the Wyoming server on port <code>10300</code>.
+        </div>
         <form id="transcribe-form" class="transcribe-form">
             <div class="input-grid">
                 <div class="input-panel">
@@ -249,6 +254,31 @@
     </div>
 
     <div class="card">
+        <h2>Ustawienia</h2>
+        <div class="form-row">
+            <label for="speaker-text-mode">Przekazywanie tożsamości mówcy</label>
+            <select id="speaker-text-mode">
+                <option value="prefix">Tylko prefiks w tekście („Krzysztof: …”)</option>
+                <option value="field">Tylko pole „speaker” w evencie Wyoming (czysty tekst)</option>
+                <option value="both">Prefiks w tekście i pole „speaker”</option>
+            </select>
+            <div class="hint">Jak pipeline Home Assistant dostaje informację o tym, kto mówi.
+                Zmiana obowiązuje od następnej transkrypcji (bez restartu).</div>
+            <div class="button-row" style="margin-top: 0.5rem;">
+                <button id="save-settings-button" type="button">Zapisz ustawienia</button>
+            </div>
+            <div id="settings-status" class="hint"></div>
+        </div>
+        <div class="form-row">
+            <label for="api-token">API token</label>
+            <input id="api-token" type="password" autocomplete="off"
+                   placeholder="Potrzebny tylko, gdy serwer ma ustawione API_TOKEN">
+            <div class="hint">Przechowywany lokalnie w tej przeglądarce; wysyłany jako nagłówek
+                <code>X-API-Token</code> przy każdym żądaniu API.</div>
+        </div>
+    </div>
+
+    <div class="card">
         <h2>Supported Languages</h2>
         <div>__SUPPORTED_LANGUAGE_BADGES__</div>
     </div>
@@ -291,6 +321,14 @@ let mediaRecorder = null;
 let mediaStream = null;
 let recordedChunks = [];
 let recordedBlob = null;
+
+// Filled in server-side; false when this process runs with --no-load-model.
+const ASR_AVAILABLE = __ASR_AVAILABLE__;
+if (!ASR_AVAILABLE) {
+    document.getElementById("asr-unavailable").style.display = "block";
+    submitButton.disabled = true;
+    result.querySelector("code").textContent = "Transcription is unavailable in this process.";
+}
 
 function detectRecordingMimeType() {
     const mimeTypes = [
@@ -455,6 +493,7 @@ form.addEventListener("submit", async (event) => {
     try {
         const response = await fetch("/inference", {
             method: "POST",
+            headers: authHeaders(),
             body: formData,
         });
         const payload = await response.json();
@@ -495,8 +534,15 @@ function speakerMime() {
     return types.find((t) => MediaRecorder.isTypeSupported(t)) || "";
 }
 
+function authHeaders() {
+    const token = localStorage.getItem("apiToken");
+    return token ? { "X-API-Token": token } : {};
+}
+
 async function apiRequest(url, options) {
-    const response = await fetch(url, options);
+    const opts = options ? { ...options } : {};
+    opts.headers = { ...authHeaders(), ...(opts.headers || {}) };
+    const response = await fetch(url, opts);
     let payload = {};
     try { payload = await response.json(); } catch (e) { /* file or empty */ }
     if (!response.ok) {
@@ -729,6 +775,43 @@ newSpeakerName.addEventListener("keydown", (event) => {
     if (event.key === "Enter") { event.preventDefault(); addSpeaker(); }
 });
 loadSpeakers();
+
+const speakerTextMode = document.getElementById("speaker-text-mode");
+const saveSettingsButton = document.getElementById("save-settings-button");
+const settingsStatus = document.getElementById("settings-status");
+const apiTokenInput = document.getElementById("api-token");
+
+apiTokenInput.value = localStorage.getItem("apiToken") || "";
+apiTokenInput.addEventListener("change", () => {
+    localStorage.setItem("apiToken", apiTokenInput.value.trim());
+    loadSettings();
+    loadSpeakers();
+});
+
+async function loadSettings() {
+    try {
+        const data = await apiRequest("/settings");
+        if (data.speaker_text_mode) {
+            speakerTextMode.value = data.speaker_text_mode;
+        }
+        settingsStatus.textContent = "";
+    } catch (error) {
+        settingsStatus.textContent = `Błąd wczytywania ustawień: ${error.message}`;
+    }
+}
+
+saveSettingsButton.addEventListener("click", async () => {
+    const form = new FormData();
+    form.append("speaker_text_mode", speakerTextMode.value);
+    try {
+        await apiRequest("/settings", { method: "POST", body: form });
+        settingsStatus.textContent = "Zapisano — obowiązuje od następnej transkrypcji.";
+    } catch (error) {
+        settingsStatus.textContent = `Błąd zapisu: ${error.message}`;
+    }
+});
+
+loadSettings();
 </script>
 </body>
 </html>

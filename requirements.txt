@@ -3,6 +3,7 @@ uvicorn[standard]>=0.29.0
 python-multipart>=0.0.9
 transformers==5.4.0
 torch==2.6.0
+torchaudio==2.6.0
 huggingface_hub
 soundfile
 librosa>=0.10.0
@@ -10,3 +11,5 @@ sentencepiece
 protobuf
 numpy
 wyoming>=1.8.0
+silero-vad>=6.2.0
+speechbrain>=1.0.0

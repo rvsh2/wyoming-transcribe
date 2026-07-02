@@ -8,22 +8,27 @@ services:
     restart: unless-stopped
     ports:
       - "0.0.0.0:10300:10300"
-      - "0.0.0.0:8580:8580"
+      # The management API (speaker enrollment, /load) has no authentication, so
+      # it is published on loopback only. To use the UI from another machine,
+      # tunnel it (ssh -L 8580:127.0.0.1:8580 <host>) or put it behind an
+      # authenticating reverse proxy instead of widening this bind.
+      - "127.0.0.1:8580:8580"
     networks:
       - bridge-network
     volumes:
       - /opt/wyoming-transcribe/data:/root/.cache/huggingface
       - /opt/wyoming-transcribe/speakers:/app/speakers
-      # Run patched entrypoint code without a full image rebuild (the Dockerfile
-      # COPYs code before installing deps, so rebuilding re-downloads torch). The
-      # source is committed, so a future `docker compose build` bakes this in and
-      # this overlay becomes a harmless no-op. Path is relative to this compose file.
-      - ./cohere_wyoming/__main__.py:/app/cohere_wyoming/__main__.py:ro
     environment:
       - HF_HOME=/root/.cache/huggingface
       - HF_TOKEN=${HF_TOKEN:-}
       - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:-}
       - NVIDIA_VISIBLE_DEVICES=all
+      # Optional auth for the management API on 8580 (empty = disabled; the
+      # loopback-only port publishing is then the safety boundary).
+      - API_TOKEN=${API_TOKEN:-}
+      # How speaker identity reaches the HA pipeline: prefix | field | both
+      # (default "prefix"; changeable at runtime in the UI settings card).
+      - SPEAKER_TEXT_MODE=${SPEAKER_TEXT_MODE:-prefix}
       # Speaker identification (diarize -> named speakers via ECAPA enrollment)
       - SPEAKER_ID_ENABLED=true
       - SPEAKER_ENROLLMENT_DIR=/app/speakers
@@ -39,6 +44,13 @@ services:
       - VAD_MIN_MAX_SEGMENT_MS=45
       - VAD_MIN_SPEECH_RMS=0.014
       - VAD_MIN_SPEECH_TO_NOISE_RATIO=2.6
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8580/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      # The ASR model load + warmup can take a while on first start.
+      start_period: 120s
     deploy:
       resources:
         reservations:

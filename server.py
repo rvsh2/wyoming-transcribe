@@ -6,9 +6,11 @@ Cohere Transcribe HTTP debug server backed by the shared Cohere runtime.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import html
 import logging
 import os
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -16,7 +18,7 @@ from typing import Optional
 import numpy as np
 import torch
 import uvicorn
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 
 from cohere_wyoming.audio import is_effectively_silent, read_audio_to_numpy
@@ -24,8 +26,10 @@ from cohere_wyoming.enrollment import EnrollmentError, EnrollmentStore
 from cohere_wyoming.transcriber import (
     CohereTranscriber,
     LANGUAGE_ALIASES,
+    SPEAKER_LABEL,
     SUPPORTED_LANGUAGES,
 )
+from cohere_wyoming.settings import SPEAKER_TEXT_MODES
 from cohere_wyoming.speaker_id import SpeakerRegistry
 from cohere_wyoming.vad import VadConfig
 
@@ -163,25 +167,38 @@ def format_timestamp(duration: float, *, srt: bool) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}{separator}{millis:03d}"
 
 
+def render_cue_text(segment: dict) -> str:
+    """Cue text with the enrolled name or anonymous speaker label prefixed."""
+    text = segment.get("text", "")
+    name = segment.get("name")
+    if name:
+        return f"{name}: {text}"
+    speaker = segment.get("speaker")
+    if speaker is not None:
+        return f"{SPEAKER_LABEL} {speaker}: {text}"
+    return text
+
+
+def format_subtitles(result: dict, *, srt: bool) -> str:
+    """Render one cue per diarized segment (falls back to one whole-file cue)."""
+    cues = []
+    for index, segment in enumerate(build_segments(result), start=1):
+        start = format_timestamp(segment["start"], srt=srt)
+        end = format_timestamp(segment["end"], srt=srt)
+        cues.append(f"{index}\n{start} --> {end}\n{render_cue_text(segment)}\n\n")
+    header = "" if srt else "WEBVTT\n\n"
+    return header + "".join(cues)
+
+
 def format_whisper_response(response_format: str, result: dict):
     text = result["text"]
     duration = result["duration"]
     if response_format == "text":
         return PlainTextResponse(text + "\n")
     if response_format == "srt":
-        content = (
-            "1\n"
-            f"00:00:00,000 --> {format_timestamp(duration, srt=True)}\n"
-            f"{text}\n\n"
-        )
-        return PlainTextResponse(content, media_type="text/plain")
+        return PlainTextResponse(format_subtitles(result, srt=True), media_type="text/plain")
     if response_format == "vtt":
-        content = (
-            "WEBVTT\n\n"
-            f"00:00:00.000 --> {format_timestamp(duration, srt=False)}\n"
-            f"{text}\n\n"
-        )
-        return PlainTextResponse(content, media_type="text/vtt")
+        return PlainTextResponse(format_subtitles(result, srt=False), media_type="text/vtt")
     if response_format == "verbose_json":
         return JSONResponse(
             {
@@ -189,6 +206,8 @@ def format_whisper_response(response_format: str, result: dict):
                 "language": result["language"],
                 "duration": duration,
                 "text": text,
+                "speaker": result.get("speaker"),
+                "speaker_score": result.get("speaker_score"),
                 "segments": build_segments(result),
             }
         )
@@ -206,6 +225,8 @@ def format_openai_response(response_format: str, result: dict):
                 "language": result["language"],
                 "duration": result["duration"],
                 "text": text,
+                "speaker": result.get("speaker"),
+                "speaker_score": result.get("speaker_score"),
                 "segments": build_segments(result),
             }
         )
@@ -259,6 +280,7 @@ def render_compatibility_notes() -> str:
 def render_index_page() -> str:
     template = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
     replacements = {
+        "__ASR_AVAILABLE__": "true" if service.is_loaded() else "false",
         "__MODEL_ID__": html.escape(service.model_name or "not loaded"),
         "__DEVICE__": html.escape(str(service.device) if service.device is not None else "unknown"),
         "__MODEL_BACKEND__": html.escape(service.backend),
@@ -328,6 +350,28 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Optional bearer/X-API-Token auth for the management API. Off when API_TOKEN
+# is unset (loopback-only publishing is then the safety boundary). "/" stays
+# open as a static info page and "/health" must stay open for the container
+# healthcheck.
+API_TOKEN = os.environ.get("API_TOKEN", "").strip() or None
+OPEN_PATHS = {"/", "/health"}
+
+
+@app.middleware("http")
+async def require_api_token(request: Request, call_next):
+    if API_TOKEN is not None and request.url.path not in OPEN_PATHS:
+        provided = request.headers.get("x-api-token", "")
+        if not provided:
+            authorization = request.headers.get("authorization", "")
+            if authorization.lower().startswith("bearer "):
+                provided = authorization[7:]
+        if not secrets.compare_digest(provided, API_TOKEN):
+            return JSONResponse(
+                {"detail": "Invalid or missing API token"}, status_code=401
+            )
+    return await call_next(request)
+
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
@@ -360,7 +404,10 @@ async def inference(
         translate=translate,
     )
     audio_data, sr = await read_upload_audio(file)
-    result = run_transcription_request(
+    # Inference takes seconds; run it off the event loop so /health, the
+    # enrollment UI and concurrent uploads stay responsive.
+    result = await asyncio.to_thread(
+        run_transcription_request,
         audio_data=audio_data,
         sr=sr,
         language=language,
@@ -381,7 +428,8 @@ async def openai_transcriptions(
     del model_name, prompt
     ensure_model_loaded()
     audio_data, sr = await read_upload_audio(file)
-    result = run_transcription_request(
+    result = await asyncio.to_thread(
+        run_transcription_request,
         audio_data=audio_data,
         sr=sr,
         language=language,
@@ -396,11 +444,31 @@ async def load(model_path: Optional[str] = Form(None, alias="model")):
         raise HTTPException(status_code=400, detail="No model path provided")
 
     try:
-        load_model(model_path.strip())
+        await asyncio.to_thread(load_model, model_path.strip())
         return JSONResponse({"status": "ok", "model": model_path.strip()})
     except Exception as err:
         logger.error("Failed to load model: %s", err, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to load model: {err}") from err
+
+
+@app.get("/settings")
+async def get_settings():
+    settings = service.settings_store.load()
+    return JSONResponse(
+        {
+            "speaker_text_mode": settings.speaker_text_mode,
+            "speaker_text_modes": list(SPEAKER_TEXT_MODES),
+        }
+    )
+
+
+@app.post("/settings")
+async def update_settings(speaker_text_mode: str = Form(...)):
+    try:
+        settings = service.settings_store.save(speaker_text_mode=speaker_text_mode)
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail=str(err)) from err
+    return JSONResponse({"status": "ok", "speaker_text_mode": settings.speaker_text_mode})
 
 
 def enrollment_store() -> EnrollmentStore:

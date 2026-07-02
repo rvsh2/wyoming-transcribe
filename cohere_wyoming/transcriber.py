@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Optional
@@ -13,6 +15,7 @@ import torch
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
 
 from .audio import is_effectively_silent, read_audio_to_numpy
+from .settings import DEFAULT_SPEAKER_TEXT_MODE, SettingsStore
 from .speaker_id import SpeakerRegistry
 from .vad import SileroVoiceActivityDetector, VadConfig
 
@@ -36,6 +39,17 @@ DIARIZE_PROMPT_TEMPLATE = (
 
 # Hard per-pass limit of the diarize model; longer audio is split into windows.
 MAX_CHUNK_SECONDS = 30
+
+# Generation budget per window. When a window's output hits this cap the window
+# is re-transcribed as two shorter ones (down to MIN_SPLIT_SECONDS) so dense
+# speech is not silently truncated.
+MAX_NEW_TOKENS = 400
+MIN_SPLIT_SECONDS = 8
+
+# Minimum ECAPA cosine similarity to treat a speaker from a later window as the
+# same person as one heard in an earlier window (see _merge_diarized_windows).
+# Override with the SPEAKER_CHAIN_THRESHOLD environment variable.
+DEFAULT_CHAIN_THRESHOLD = 0.40
 
 # Prefix used when rendering anonymous diarized speakers into a single transcript.
 SPEAKER_LABEL = "Mówca"
@@ -115,8 +129,13 @@ def segment_label(segment: dict) -> str:
     return f"{SPEAKER_LABEL} {segment['speaker']}"
 
 
-def render_speaker_text(segments: list[dict]) -> str:
-    """Render diarized segments into a single transcript with speaker prefixes."""
+def render_speaker_text(segments: list[dict], mode: str = DEFAULT_SPEAKER_TEXT_MODE) -> str:
+    """Render diarized segments into a single transcript.
+
+    Modes "prefix" and "both" prefix each turn with the speaker label; mode
+    "field" keeps the turn structure but omits labels (identity is delivered
+    via the Transcript event's "speaker" field instead).
+    """
     lines: list[tuple[str, str]] = []
     for segment in segments:
         text = segment["text"].strip()
@@ -128,6 +147,8 @@ def render_speaker_text(segments: list[dict]) -> str:
         else:
             lines.append((label, text))
 
+    if mode == "field":
+        return "\n".join(text for _, text in lines)
     return "\n".join(f"{label}: {text}" for label, text in lines)
 
 SUPPORTED_LANGUAGES = {
@@ -172,6 +193,11 @@ class TranscriptionResult:
     duration: float
     processing_time: float
     segments: list[dict] = field(default_factory=list)
+    # Enrolled name of the dominant speaker (most speech time), if recognized.
+    speaker: Optional[str] = None
+    speaker_score: Optional[float] = None
+    # Speaker text mode the transcript text was rendered with (see settings.py).
+    text_mode: str = DEFAULT_SPEAKER_TEXT_MODE
 
     def asdict(self) -> dict:
         return asdict(self)
@@ -188,6 +214,7 @@ class CohereTranscriber:
         prefer_device: Optional[str] = None,
         vad_config: Optional[VadConfig] = None,
         speaker_registry: Optional[SpeakerRegistry] = None,
+        settings_store: Optional[SettingsStore] = None,
     ) -> None:
         self.model_name = model_name
         self.default_language = self.resolve_language(default_language)
@@ -198,7 +225,14 @@ class CohereTranscriber:
         self.device = None
         self.vad_detector = SileroVoiceActivityDetector(vad_config or VadConfig.from_env())
         self.speaker_registry = speaker_registry
+        self.settings_store = settings_store or SettingsStore.from_env()
+        self.speaker_chain_threshold = float(
+            os.environ.get("SPEAKER_CHAIN_THRESHOLD", DEFAULT_CHAIN_THRESHOLD)
+        )
         self._prompt_id_cache: dict[str, torch.Tensor] = {}
+        # Serializes inference (and model swaps in load()) so async transports
+        # can safely offload transcribe_pcm to worker threads.
+        self._inference_lock = threading.Lock()
 
     def resolve_language(self, language: Optional[str]) -> str:
         """Resolve a requested language or fall back to the configured default."""
@@ -317,12 +351,15 @@ class CohereTranscriber:
 
         next_model.eval()
 
-        self.processor = next_processor
-        self.model = next_model
-        self.device = next_device
-        self._prompt_id_cache.clear()
-        # Fail fast here rather than crashing the first request mid-transcription.
-        self._validate_structural_prompt_tokens()
+        # Swap under the inference lock so an in-flight transcription never
+        # sees a half-updated processor/model/device triple.
+        with self._inference_lock:
+            self.processor = next_processor
+            self.model = next_model
+            self.device = next_device
+            self._prompt_id_cache.clear()
+            # Fail fast here rather than crashing the first request mid-transcription.
+            self._validate_structural_prompt_tokens()
 
         elapsed = time.time() - start_time
         LOGGER.info("Model loaded in %.1fs using backend=%s", elapsed, self.backend)
@@ -360,6 +397,28 @@ class CohereTranscriber:
         resolved_language = self.resolve_language(language)
         duration_s = len(audio_data) / sample_rate
 
+        # Async transports call this via worker threads; serialize all torch
+        # work (VAD, generate, ECAPA) and block model swaps mid-transcription.
+        with self._inference_lock:
+            return self._transcribe_pcm_locked(
+                audio_data,
+                sample_rate=sample_rate,
+                resolved_language=resolved_language,
+                duration_s=duration_s,
+                temperature=temperature,
+            )
+
+    def _transcribe_pcm_locked(
+        self,
+        audio_data: np.ndarray,
+        *,
+        sample_rate: int,
+        resolved_language: str,
+        duration_s: float,
+        temperature: float,
+    ) -> TranscriptionResult:
+        text_mode = self.settings_store.load().speaker_text_mode
+
         if is_effectively_silent(audio_data):
             LOGGER.info("No speech detected above silence threshold; returning empty transcription")
             return TranscriptionResult(
@@ -367,6 +426,7 @@ class CohereTranscriber:
                 language=resolved_language,
                 duration=round(duration_s, 2),
                 processing_time=0.0,
+                text_mode=text_mode,
             )
 
         vad_decision = self.vad_detector.detect_speech(audio_data, sample_rate=sample_rate)
@@ -386,17 +446,21 @@ class CohereTranscriber:
                 language=resolved_language,
                 duration=round(duration_s, 2),
                 processing_time=0.0,
+                text_mode=text_mode,
             )
 
         start_time = time.time()
 
-        segments: list[dict] = []
+        windows: list[list[dict]] = []
         for chunk, offset in chunk_audio(audio_data, sample_rate):
-            raw = self._generate_diarized(chunk, sample_rate, resolved_language, temperature)
-            segments.extend(parse_diarized_output(raw, offset=offset))
+            windows.extend(
+                self._transcribe_window(chunk, offset, sample_rate, resolved_language, temperature)
+            )
+        segments = self._merge_diarized_windows(windows, audio_data, sample_rate)
 
         self._identify_speakers(segments, audio_data, sample_rate)
-        text = render_speaker_text(segments)
+        dominant_name, dominant_score = self._dominant_speaker(segments)
+        text = render_speaker_text(segments, mode=text_mode)
 
         elapsed = time.time() - start_time
         rtfx = duration_s / elapsed if elapsed > 0 else 0
@@ -417,6 +481,9 @@ class CohereTranscriber:
             duration=round(duration_s, 2),
             processing_time=round(elapsed, 2),
             segments=segments,
+            speaker=dominant_name,
+            speaker_score=dominant_score,
+            text_mode=text_mode,
         )
 
     def _resolve_prompt_token(self, token: str) -> Optional[int]:
@@ -493,8 +560,12 @@ class CohereTranscriber:
         sample_rate: int,
         language: str,
         temperature: float,
-    ) -> str:
-        """Run a single diarize generation pass and return the raw token stream."""
+    ) -> tuple[str, bool]:
+        """Run a single diarize generation pass.
+
+        Returns the raw token stream and whether generation was cut off by the
+        MAX_NEW_TOKENS cap (i.e. the window's tail may be missing).
+        """
         inputs = self.processor(
             audio_data,
             sampling_rate=sample_rate,
@@ -524,7 +595,7 @@ class CohereTranscriber:
             )
 
         generate_kwargs = {
-            "max_new_tokens": 400,
+            "max_new_tokens": MAX_NEW_TOKENS,
             "do_sample": False,
             "repetition_penalty": 1.2,
         }
@@ -535,12 +606,165 @@ class CohereTranscriber:
         with torch.no_grad():
             outputs = self.model.generate(**model_inputs, **generate_kwargs)
 
-        return self.processor.tokenizer.decode(outputs[0], skip_special_tokens=False)
+        generated_tokens = outputs[0].shape[-1] - model_inputs["decoder_input_ids"].shape[-1]
+        end_token_id = self._resolve_prompt_token("<|endoftext|>")
+        if end_token_id is None:
+            end_token_id = self.processor.tokenizer.eos_token_id
+        truncated = generated_tokens >= MAX_NEW_TOKENS and (
+            end_token_id is None or int(outputs[0][-1]) != end_token_id
+        )
+
+        return self.processor.tokenizer.decode(outputs[0], skip_special_tokens=False), truncated
+
+    def _transcribe_window(
+        self,
+        chunk: np.ndarray,
+        offset: float,
+        sample_rate: int,
+        language: str,
+        temperature: float,
+    ) -> list[list[dict]]:
+        """Transcribe one window, splitting it in half when generation is truncated.
+
+        Returns one parsed-segment list per generation pass; each pass has its
+        own window-local speaker indices, so callers must merge them via
+        _merge_diarized_windows.
+        """
+        raw, truncated = self._generate_diarized(chunk, sample_rate, language, temperature)
+        duration = len(chunk) / sample_rate
+
+        if truncated and duration >= 2 * MIN_SPLIT_SECONDS:
+            LOGGER.warning(
+                "Diarize generation hit the %d-token cap on a %.1fs window; "
+                "retrying as two shorter windows",
+                MAX_NEW_TOKENS,
+                duration,
+            )
+            half = len(chunk) // 2
+            return self._transcribe_window(
+                chunk[:half], offset, sample_rate, language, temperature
+            ) + self._transcribe_window(
+                chunk[half:], offset + half / sample_rate, sample_rate, language, temperature
+            )
+
+        if truncated:
+            LOGGER.warning(
+                "Diarize generation hit the %d-token cap on a %.1fs window; "
+                "the end of this window may be missing from the transcript",
+                MAX_NEW_TOKENS,
+                duration,
+            )
+
+        return [parse_diarized_output(raw, offset=offset)]
+
+    def _merge_diarized_windows(
+        self,
+        windows: list[list[dict]],
+        audio_data: np.ndarray,
+        sample_rate: int,
+    ) -> list[dict]:
+        """Merge per-window diarized segments onto one global speaker space.
+
+        Diarize speaker indices restart at 0 in every generation window, so the
+        same index in two windows usually names two different people. Each
+        window-local speaker is matched to speakers from earlier windows by
+        ECAPA voiceprint similarity; without a confident match (or without the
+        embedding backend) it gets a fresh global index — over-splitting is
+        recoverable by enrollment naming, silently merging two people is not.
+        """
+        windows = [window for window in windows if window]
+        if not windows:
+            return []
+        if len(windows) == 1:
+            return windows[0]
+
+        registry = self.speaker_registry
+        use_embeddings = registry is not None and registry.enabled
+
+        merged: list[dict] = []
+        # global speaker index -> (sum of L2-normalized embeddings, count)
+        profiles: dict[int, tuple[np.ndarray, int]] = {}
+        next_index = 0
+        total_samples = len(audio_data)
+
+        for window in windows:
+            local_speakers = sorted({segment["speaker"] for segment in window})
+
+            embeddings: dict[int, np.ndarray] = {}
+            if use_embeddings:
+                clips: list[Optional[np.ndarray]] = []
+                for local in local_speakers:
+                    parts = []
+                    for segment in window:
+                        if segment["speaker"] != local:
+                            continue
+                        start = max(0, int(segment["start"] * sample_rate))
+                        end = min(total_samples, int(segment["end"] * sample_rate))
+                        if end > start:
+                            parts.append(audio_data[start:end])
+                    clips.append(np.concatenate(parts) if parts else None)
+                try:
+                    for local, embedding in zip(local_speakers, registry.embed_batch(clips)):
+                        if embedding is not None:
+                            embeddings[local] = embedding
+                except Exception as error:
+                    LOGGER.warning(
+                        "Cross-window speaker embedding failed; speakers will not be "
+                        "merged across windows: %s",
+                        error,
+                    )
+                    use_embeddings = False
+                    embeddings = {}
+
+            # Best-score-first unique assignment of window speakers to known ones.
+            candidates: list[tuple[float, int, int]] = []
+            for local, embedding in embeddings.items():
+                for global_index, (vector_sum, count) in profiles.items():
+                    profile = vector_sum / count
+                    norm = float(np.linalg.norm(profile))
+                    if norm == 0.0:
+                        continue
+                    score = float(np.dot(embedding, profile / norm))
+                    if score >= self.speaker_chain_threshold:
+                        candidates.append((score, local, global_index))
+            candidates.sort(key=lambda item: item[0], reverse=True)
+
+            mapping: dict[int, int] = {}
+            used_globals: set[int] = set()
+            for score, local, global_index in candidates:
+                if local in mapping or global_index in used_globals:
+                    continue
+                mapping[local] = global_index
+                used_globals.add(global_index)
+            for local in local_speakers:
+                if local not in mapping:
+                    mapping[local] = next_index
+                    next_index += 1
+
+            for local, embedding in embeddings.items():
+                global_index = mapping[local]
+                if global_index in profiles:
+                    vector_sum, count = profiles[global_index]
+                    profiles[global_index] = (vector_sum + embedding, count + 1)
+                else:
+                    profiles[global_index] = (embedding.copy(), 1)
+
+            for segment in window:
+                segment["speaker"] = mapping[segment["speaker"]]
+            merged.extend(window)
+
+        return merged
 
     def _identify_speakers(
         self, segments: list[dict], audio_data: np.ndarray, sample_rate: int
     ) -> None:
-        """Annotate each segment with an enrolled speaker name when one matches."""
+        """Annotate segments with enrolled names, matching once per diarized speaker.
+
+        All of a speaker's segments are concatenated into one clip before
+        embedding: voice commands are often split into sub-0.4 s segments too
+        short for a reliable voiceprint on their own, while the concatenation
+        matches well. The name is then applied to all of that speaker's segments.
+        """
         registry = self.speaker_registry
         if registry is None or not registry.enabled or not segments:
             return
@@ -555,11 +779,18 @@ class CohereTranscriber:
             return
 
         total_samples = len(audio_data)
+        speaker_ids = sorted({segment["speaker"] for segment in segments})
         clips: list[Optional[np.ndarray]] = []
-        for segment in segments:
-            start = max(0, int(segment["start"] * sample_rate))
-            end = min(total_samples, int(segment["end"] * sample_rate))
-            clips.append(audio_data[start:end] if end > start else None)
+        for speaker_id in speaker_ids:
+            parts = []
+            for segment in segments:
+                if segment["speaker"] != speaker_id:
+                    continue
+                start = max(0, int(segment["start"] * sample_rate))
+                end = min(total_samples, int(segment["end"] * sample_rate))
+                if end > start:
+                    parts.append(audio_data[start:end])
+            clips.append(np.concatenate(parts) if parts else None)
 
         try:
             matches = registry.identify_batch(clips)
@@ -567,10 +798,33 @@ class CohereTranscriber:
             LOGGER.warning("Speaker identification failed: %s", error)
             return
 
-        for segment, match in zip(segments, matches):
-            if match.name:
+        named = {
+            speaker_id: match
+            for speaker_id, match in zip(speaker_ids, matches)
+            if match.name
+        }
+        for segment in segments:
+            match = named.get(segment["speaker"])
+            if match is not None:
                 segment["name"] = match.name
                 segment["score"] = match.score
+
+    @staticmethod
+    def _dominant_speaker(segments: list[dict]) -> tuple[Optional[str], Optional[float]]:
+        """Enrolled name of the speaker with the most speech time, if recognized."""
+        if not segments:
+            return None, None
+
+        durations: dict[int, float] = {}
+        for segment in segments:
+            length = max(0.0, segment["end"] - segment["start"])
+            durations[segment["speaker"]] = durations.get(segment["speaker"], 0.0) + length
+
+        dominant = max(durations, key=durations.get)
+        for segment in segments:
+            if segment["speaker"] == dominant and segment.get("name"):
+                return segment["name"], segment.get("score")
+        return None, None
 
     def transcribe_file_bytes(
         self,

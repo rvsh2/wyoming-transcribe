@@ -85,13 +85,23 @@ docker compose up --build -d
 `compose.yml` runs the Wyoming service on port `10300`, the enrollment UI on port `8580`,
 mounts `./speakers` for enrolled voices, and includes a ready-to-use VAD preset for Home
 Assistant. The container starts both services from `docker-entrypoint.sh` (the UI process
-runs with `--no-load-model`, so the ASR model is loaded only once, by the Wyoming process).
+runs with `--no-load-model`, so the ASR model is loaded only once, by the Wyoming process);
+if either service dies, the container exits so Docker's restart policy brings both back up.
+
+The enrollment UI / management API has **no authentication** and includes destructive
+endpoints (deleting speakers, hot-swapping the model), so compose publishes port `8580`
+on `127.0.0.1` only. To use the UI from another machine, tunnel it
+(`ssh -L 8580:127.0.0.1:8580 <docker-host>`) or put it behind an authenticating reverse
+proxy. HTTP transcription (`POST /inference`) is unavailable in the default Docker setup —
+the UI process runs without the ASR model; speech-to-text is served by the Wyoming process
+on port `10300`.
 
 ### Startup, warmup and model cache
 
-On startup the Wyoming process loads the diarize model and then runs a short **ASR warmup**
-(a dummy `_generate_diarized` pass) so the *first* real transcription is fast instead of
-paying CUDA-kernel compilation on the first request.
+On startup the Wyoming process loads the diarize model and then runs a short **warmup**
+(Silero VAD load + a dummy `_generate_diarized` pass) so the *first* real transcription
+is fast instead of paying lazy model loading and CUDA-kernel compilation on the first
+request.
 
 The model is downloaded from Hugging Face **once** into the cache volume
 (`/root/.cache/huggingface`) and loaded from that local copy on every subsequent start
@@ -112,7 +122,7 @@ Manual container start is also possible:
 
 ```bash
 docker build -t wyoming-transcribe .
-docker run --gpus all -p 10300:10300 -p 8580:8580 \
+docker run --gpus all -p 10300:10300 -p 127.0.0.1:8580:8580 \
   -v /opt/wyoming-transcribe/speakers:/app/speakers \
   -e HF_TOKEN=hf_your_token_here \
   -e SPEAKER_ID_ENABLED=true \
@@ -214,12 +224,39 @@ Environment variables:
 - `SPEAKER_MATCH_THRESHOLD=0.35` — cosine threshold; raise to reduce false matches
 - `SPEAKER_MODEL=speechbrain/spkrec-ecapa-voxceleb` — embedding model
 - `SPEAKER_MODEL_CACHE=/root/.cache/huggingface/ecapa` — where to cache the ECAPA model
+- `SPEAKER_CHAIN_THRESHOLD=0.40` — cosine threshold for linking the *same anonymous
+  speaker* across 30 s diarization windows in recordings longer than 30 s (raise to
+  split more, lower to merge more)
 
 Practical guidance:
 
 - Enroll 10–30 s of clean speech per person, ideally from the same microphone as real use.
-- Very short utterances (1–2 words) give weak voiceprints and may stay anonymous.
-- Speaker labels reset per clip; identification is global, so enrollment also stabilizes them.
+- Identification is done once per diarized speaker on the concatenation of all their
+  segments, so even a short command builds a usable voiceprint.
+- Anonymous `Mówca N` labels are made consistent across 30 s windows by ECAPA voiceprint
+  matching; enrollment naming is still the most reliable way to stabilize identity.
+
+### Speaker identity for the HA pipeline
+
+How identity is delivered is configurable (`SPEAKER_TEXT_MODE`, or at runtime in the
+UI settings card — the Wyoming process picks the change up on the next transcription):
+
+- `prefix` (default) — transcript text lines are prefixed: `Krzysztof: zgaś światło`.
+  Simplest for an LLM conversation agent; no pipeline changes needed.
+- `field` — the text stays clean (`zgaś światło`) and the Wyoming `Transcript` event
+  carries extra data: `speaker` (enrolled name of the dominant speaker, or `null`) and
+  `speaker_score`. Home Assistant ignores unknown event fields, so this is safe today
+  and usable by a custom pipeline component later.
+- `both` — prefixed text and the event fields.
+
+`verbose_json` HTTP responses include `speaker`/`speaker_score` in all modes.
+
+### Management API auth
+
+Set `API_TOKEN` to require a token on every endpoint except `/` and `/health`
+(clients send `X-API-Token: <token>` or `Authorization: Bearer <token>`; the UI has a
+token box that stores it in the browser). With `API_TOKEN` unset, auth is disabled and
+the loopback-only port publishing in `compose.yml` is the safety boundary.
 - The ECAPA cost is negligible next to the ASR model, so it does not affect realtime latency.
 
 ## Supported Languages

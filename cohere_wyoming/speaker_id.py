@@ -98,10 +98,12 @@ class SpeakerRegistry:
         try:
             import torch
 
+            # speechbrain requires an explicit device index ("cuda" alone logs
+            # a parse warning and falls back to device 0).
             if self.prefer_device and self.prefer_device.startswith("cuda"):
-                return "cuda"
+                return self.prefer_device if ":" in self.prefer_device else "cuda:0"
             if torch.cuda.is_available():
-                return "cuda"
+                return "cuda:0"
         except Exception:  # pragma: no cover - torch always present in runtime
             pass
         return "cpu"
@@ -153,9 +155,9 @@ class SpeakerRegistry:
         for row, (_, clip) in enumerate(valid):
             batch[row, : len(clip)] = torch.from_numpy(clip)
             wav_lens[row] = len(clip) / max_len
-        if self._device == "cuda":
-            batch = batch.cuda()
-            wav_lens = wav_lens.cuda()
+        if self._device and self._device.startswith("cuda"):
+            batch = batch.to(self._device)
+            wav_lens = wav_lens.to(self._device)
         with torch.no_grad():
             embeddings = self._encoder.encode_batch(batch, wav_lens=wav_lens)
         embeddings = embeddings.squeeze(1).detach().cpu().numpy()
