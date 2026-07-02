@@ -32,6 +32,85 @@ label becomes that person's name (e.g. `Krzysztof:`). Notes:
 - The model's own speaker labels can be imperfect; enrollment-based identification matches
   each segment to a voiceprint independently and can correct them.
 
+## How to use it (end-to-end walkthrough)
+
+The typical life of this service, from zero to an LLM that knows who is speaking:
+
+**Step 1 — start the server.** `docker compose up -d` (details in [Docker](#docker)).
+Two services run in one container: the Wyoming ASR server on port `10300` (this is
+what Home Assistant talks to) and the management UI/API on port `8580`.
+
+**Step 2 — plug into Home Assistant.** Add the *Wyoming Protocol* integration
+pointing at `<host>:10300` and select it as speech-to-text in your voice pipeline.
+Transcription works immediately; every transcript line is prefixed with the speaker
+(`Mówca 0: ...`).
+
+**Step 3 — open the management UI** (`http://127.0.0.1:8580` on the Docker host, via
+SSH tunnel, or as a Home Assistant sidebar panel — see
+[HACS integration](#hacs-integration-ui-panel--sensors-in-ha)). From here you manage
+everything below.
+
+**Step 4 — teach it who people are.** Two ways, freely combined:
+
+- *Up front*: add a person in the "Mówcy" card and record/upload 10–30 s of their
+  speech.
+- *From real usage*: just talk to the assistant. Every utterance whose voice is not
+  recognized lands in the **"Nierozpoznane głosy"** card, grouped by voice. Listen,
+  check who it is, and assign the whole group to a person (existing or new) with two
+  clicks. The person's profile is built from all clips in the group at once.
+
+From the next utterance the voice is recognized and the transcript says
+`Krzysztof: zgaś światło` instead of `Mówca 0: zgaś światło`.
+
+**Step 5 — give people roles.** Next to each person pick `admin`, `user` (default)
+or `guest`. The role travels with the transcription (see below), so the LLM can be
+told e.g. "only admin may unlock doors".
+
+**Step 6 — decide how the pipeline receives identity** (the "Ustawienia" card,
+switchable at runtime):
+
+| Mode | Transcript text | Extra fields in the Wyoming `Transcript` event |
+|---|---|---|
+| `prefix` (default) | `Krzysztof: zgaś światło` | only `utterance_id` (when voice unknown) |
+| `field` | `zgaś światło` | `speaker`, `speaker_score`, `speaker_role`, `utterance_id` |
+| `both` | `Krzysztof: zgaś światło` | `speaker`, `speaker_score`, `speaker_role`, `utterance_id` |
+
+Start with `prefix` — it needs zero pipeline changes; an LLM conversation agent
+simply sees who speaks in the text. Switch to `field`/`both` once your pipeline
+consumes the event fields.
+
+**Step 7 (optional) — let the LLM enroll people itself.** When the event carries
+`speaker: null` and an `utterance_id`, the agent can ask *"kim jesteś?"* and, after
+the answer, call one tool:
+
+```bash
+curl -X POST -H "X-API-Token: $API_TOKEN" -F include_cluster=true \
+  "http://HOST:8580/speakers/Krzysztof/samples/from-utterance/<utterance_id>"
+```
+
+That single call creates the person (if new), claims **all** buffered clips of that
+voice as enrollment samples, and from the next sentence the person is recognized.
+Full details: [Unknown voices](#unknown-voices--who-are-you-enrollment).
+
+### API cheat sheet
+
+All endpoints live on port `8580`; with `API_TOKEN` set, send
+`X-API-Token: <token>` (or `Authorization: Bearer <token>`) — only `/` and `/health`
+are open.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /health` | readiness/liveness, VAD + speaker-ID status |
+| `POST /inference`, `POST /v1/audio/transcriptions` | HTTP transcription (whisper.cpp / OpenAI shape; needs a process with the model loaded) |
+| `GET`/`POST /settings` | read / switch `speaker_text_mode` at runtime |
+| `GET /speakers` | people, their samples and roles |
+| `POST /speakers` (form `name`) | add a person |
+| `POST /speakers/{name}/samples` (file upload) | add a voice sample |
+| `POST /speakers/{name}/role` (form `role`) | set `admin`/`user`/`guest` |
+| `GET /pending` | unrecognized clips, grouped by voice |
+| `GET /pending/{id}/audio` / `DELETE /pending/{id}` | listen to / discard a clip |
+| `POST /speakers/{name}/samples/from-utterance/{id}` | claim a clip (+its voice group) as samples — the LLM enrollment tool |
+
 ## Requirements
 
 - Python 3.11+
