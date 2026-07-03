@@ -1,4 +1,4 @@
-"""Status sensors for the Wyoming Transcribe integration."""
+"""Status sensors for the Cohere-Transcribe-Diarize integration."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ async def async_setup_entry(
     )
 
 
-class WyomingTranscribeSensor(CoordinatorEntity, SensorEntity):
+class CohereTranscribeDiarizeSensor(CoordinatorEntity, SensorEntity):
     _attr_has_entity_name = True
 
     def __init__(self, coordinator, entry: ConfigEntry, key: str) -> None:
@@ -36,12 +36,12 @@ class WyomingTranscribeSensor(CoordinatorEntity, SensorEntity):
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name="Cohere-Transcribe-Diarize",
-            manufacturer="wyoming-transcribe",
+            manufacturer="cohere-transcribe-diarize",
             configuration_url=base_url(entry),
         )
 
 
-class ModelStatusSensor(WyomingTranscribeSensor):
+class ModelStatusSensor(CohereTranscribeDiarizeSensor):
     _attr_translation_key = "model_status"
     _attr_icon = "mdi:brain"
 
@@ -70,7 +70,7 @@ class ModelStatusSensor(WyomingTranscribeSensor):
         }
 
 
-class EnrolledSpeakersSensor(WyomingTranscribeSensor):
+class EnrolledSpeakersSensor(CohereTranscribeDiarizeSensor):
     _attr_translation_key = "enrolled_speakers"
     _attr_icon = "mdi:account-group"
 
@@ -95,7 +95,7 @@ class EnrolledSpeakersSensor(WyomingTranscribeSensor):
         }
 
 
-class PendingVoicesSensor(WyomingTranscribeSensor):
+class PendingVoicesSensor(CohereTranscribeDiarizeSensor):
     _attr_translation_key = "pending_voices"
     _attr_icon = "mdi:account-question"
 

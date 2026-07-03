@@ -231,13 +231,13 @@ Typical setup:
 
 ### HACS integration (UI panel + sensors in HA)
 
-This repo ships a Home Assistant custom integration (`custom_components/wyoming_transcribe`)
+This repo ships a Home Assistant custom integration (`custom_components/cohere_transcribe_diarize`)
 with the **full management UI as a native HA sidebar panel** (speakers with roles and
 sample recording, unrecognized voices, recognition log, settings, backup) plus status
 sensors (model status, enrolled speakers, pending unrecognized voices).
 
 Since 0.3.0 the panel is not an iframe: it is rendered by the HA frontend and talks to
-the server through an **authenticated proxy** (`/api/wyoming_transcribe/proxy/...`,
+the server through an **authenticated proxy** (`/api/cohere_transcribe_diarize/proxy/...`,
 admin-only). Consequences:
 
 - the API token lives only in the integration's config — never in the browser;
@@ -252,17 +252,17 @@ as a frozen fallback for non-HA setups.
 
 The integration also gives automations and LLM tools native HA hooks:
 
-- **Event `wyoming_transcribe_new_pending`** — fired when a new unrecognized voice
+- **Event `cohere_transcribe_diarize_new_pending`** — fired when a new unrecognized voice
   lands in the pending buffer (data: `utterance_id`, `text`, `seconds`, `created`).
   Example automation: send an actionable notification "Nowy głos: *zgaś światło* —
   kto to?" with buttons that call the claim service per household member.
-- **Service `wyoming_transcribe.claim_latest`** (`name`, optional `include_cluster`,
+- **Service `cohere_transcribe_diarize.claim_latest`** (`name`, optional `include_cluster`,
   `max_age_seconds`) — voice-anchored enrollment of the newest unrecognized
   utterance; the LLM tool for the "who are you?" flow (no utterance_id needed).
-- **Service `wyoming_transcribe.claim_utterance`** (`name`, `utterance_id`,
+- **Service `cohere_transcribe_diarize.claim_utterance`** (`name`, `utterance_id`,
   `include_cluster` default true) — like above but for an explicit clip, e.g. from
-  the `wyoming_transcribe_new_pending` event data.
-- **Service `wyoming_transcribe.set_role`** (`name`, `role`: admin/user/guest).
+  the `cohere_transcribe_diarize_new_pending` event data.
+- **Service `cohere_transcribe_diarize.set_role`** (`name`, `role`: admin/user/guest).
 
 Note: pending clips are polled every 15 s, so the event can lag up to 15 s
 behind the utterance.
@@ -431,11 +431,11 @@ Three ways to resolve a pending voice:
    "the newest clip + its voice cluster" therefore assigns the *right* voice even
    if another person interjected in between. That is exactly what
    `POST /speakers/{name}/samples/from-latest` and the HA service
-   `wyoming_transcribe.claim_latest` do (with a `max_age_seconds` guard, default
+   `cohere_transcribe_diarize.claim_latest` do (with a `max_age_seconds` guard, default
    300 s, refusing stale anchors).
 
    To avoid interrogating every one-off visitor, the companion service
-   `wyoming_transcribe.check_latest_voice` (backed by `GET /pending/latest-voice`)
+   `cohere_transcribe_diarize.check_latest_voice` (backed by `GET /pending/latest-voice`)
    reports how much the *current unknown voice* has already talked to the system
    (its cluster: utterance count, total seconds, age of the newest clip) and
    returns a ready `should_ask` verdict — ask only "regulars" (defaults: ≥ 3
@@ -453,7 +453,7 @@ Three ways to resolve a pending voice:
          czy warto zapytać tę osobę, kim jest (pyta tylko "bywalców", nie
          jednorazowych gości).
        sequence:
-         - service: wyoming_transcribe.check_latest_voice
+         - service: cohere_transcribe_diarize.check_latest_voice
            response_variable: voice
          - stop: ""
            response_variable: voice
@@ -473,7 +473,7 @@ Three ways to resolve a pending voice:
            description: "utterance_id ze sprawdz_nieznany_glos"
            required: false
        sequence:
-         - service: wyoming_transcribe.claim_latest
+         - service: cohere_transcribe_diarize.claim_latest
            data:
              name: "{{ name }}"
              anchor_utterance_id: "{{ anchor_utterance_id | default('') }}"
@@ -502,7 +502,7 @@ Three ways to resolve a pending voice:
    be enrolled under that name — hence the prompt asks the person to introduce
    themselves; misassignments are visible and reversible in the panel.
 
-   The `wyoming_transcribe_new_pending` event carries `voice_utterances` (cluster
+   The `cohere_transcribe_diarize_new_pending` event carries `voice_utterances` (cluster
    size), so a notification automation can likewise alert only about regulars
    (condition: `{{ trigger.event.data.voice_utterances >= 3 }}`).
 3. **Ignore/delete** — pending clips live in a ring buffer (`PENDING_MAX_CLIPS`,

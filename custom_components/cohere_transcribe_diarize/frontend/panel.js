@@ -1,9 +1,9 @@
-/* Wyoming Transcribe — Home Assistant custom panel.
+/* Cohere-Transcribe-Diarize — Home Assistant custom panel.
  *
  * The full management UI (speakers, pending voices, recognition log,
  * settings, backup) rendered inside the HA frontend. All API calls go
  * through the integration's authenticated proxy
- * (/api/wyoming_transcribe/proxy/...), so the API token never reaches
+ * (/api/cohere_transcribe_diarize/proxy/...), so the API token never reaches
  * the browser and port 8580 only needs to be reachable from the HA host.
  *
  * This panel is the primary UI; the server-side page on port 8580 stays
@@ -73,7 +73,7 @@ const STYLES = `
   .recording-live { color: #ffb4be; font-weight: 700; }
 `;
 
-class WyomingTranscribePanel extends HTMLElement {
+class CohereTranscribeDiarizePanel extends HTMLElement {
   constructor() {
     super();
     this._hass = null;
@@ -104,7 +104,7 @@ class WyomingTranscribePanel extends HTMLElement {
 
   async _api(path, options = {}) {
     const response = await this._hass.fetchWithAuth(
-      `/api/wyoming_transcribe/proxy/${path}`,
+      `/api/cohere_transcribe_diarize/proxy/${path}`,
       options
     );
     let payload = {};
@@ -117,7 +117,7 @@ class WyomingTranscribePanel extends HTMLElement {
 
   async _apiBlob(path) {
     const response = await this._hass.fetchWithAuth(
-      `/api/wyoming_transcribe/proxy/${path}`
+      `/api/cohere_transcribe_diarize/proxy/${path}`
     );
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return response.blob();
@@ -159,7 +159,7 @@ class WyomingTranscribePanel extends HTMLElement {
           <h2>Nierozpoznane głosy</h2>
           <p class="hint">Wypowiedzi, których głos nie pasował do żadnej osoby (jedna grupa = ten
             sam głos). Odsłuchaj i przypisz — domyślnie przypisywana jest cała grupa. Te same
-            nagrania może przypisywać usługa <code>wyoming_transcribe.claim_utterance</code>.</p>
+            nagrania może przypisywać usługa <code>cohere_transcribe_diarize.claim_utterance</code>.</p>
           <div id="pending-status" class="hint"></div>
           <div id="pending-list"></div>
         </div>
@@ -759,4 +759,4 @@ class WyomingTranscribePanel extends HTMLElement {
   }
 }
 
-customElements.define("wyoming-transcribe-panel", WyomingTranscribePanel);
+customElements.define("cohere-transcribe-diarize-panel", CohereTranscribeDiarizePanel);

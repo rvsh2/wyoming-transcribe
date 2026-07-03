@@ -26,7 +26,7 @@ claim_utterance:
         boolean:
     host:
       name: Server host
-      description: Only needed when multiple Wyoming Transcribe servers are configured.
+      description: Only needed when multiple Cohere-Transcribe-Diarize servers are configured.
       required: false
       selector:
         text:
@@ -74,7 +74,7 @@ claim_latest:
         text:
     host:
       name: Server host
-      description: Only needed when multiple Wyoming Transcribe servers are configured.
+      description: Only needed when multiple Cohere-Transcribe-Diarize servers are configured.
       required: false
       selector:
         text:
@@ -116,7 +116,7 @@ check_latest_voice:
           unit_of_measurement: s
     host:
       name: Server host
-      description: Only needed when multiple Wyoming Transcribe servers are configured.
+      description: Only needed when multiple Cohere-Transcribe-Diarize servers are configured.
       required: false
       selector:
         text:
@@ -142,7 +142,7 @@ set_role:
             - guest
     host:
       name: Server host
-      description: Only needed when multiple Wyoming Transcribe servers are configured.
+      description: Only needed when multiple Cohere-Transcribe-Diarize servers are configured.
       required: false
       selector:
         text:

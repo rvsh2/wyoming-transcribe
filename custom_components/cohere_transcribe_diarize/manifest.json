@@ -1,5 +1,5 @@
 {
-  "domain": "wyoming_transcribe",
+  "domain": "cohere_transcribe_diarize",
   "name": "Cohere-Transcribe-Diarize",
   "codeowners": ["@rvsh2"],
   "config_flow": true,
