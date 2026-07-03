@@ -158,6 +158,15 @@ async def serve(args: argparse.Namespace) -> None:
         transcriber.vad_detector.detect_speech(_dummy, sample_rate=16000)
         LOGGER.info("VAD warmup done in %.1fs", _time.time() - _t)
 
+        # The ECAPA encoder is lazy-loaded on the first embed (profile
+        # embeddings come from the disk cache, so startup never triggers it);
+        # without this the first real request pays for the speechbrain import,
+        # model load and first CUDA forward (~1.4 s observed).
+        if transcriber.speaker_registry is not None and transcriber.speaker_registry.enabled:
+            _t = _time.time()
+            transcriber.speaker_registry.embed(_dummy)
+            LOGGER.info("Speaker embedding warmup done in %.1fs", _time.time() - _t)
+
         _t = _time.time()
         _dummy_full = (_np.random.randn(30 * 16000).astype("float32") * 0.02)
         transcriber._generate_diarized(_dummy_full, 16000, transcriber.default_language, 0.0)
