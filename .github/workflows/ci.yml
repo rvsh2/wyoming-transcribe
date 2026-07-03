@@ -27,4 +27,5 @@ jobs:
         run: pip install -e . pytest
 
       - name: Run tests
-        run: pytest -q
+        # python -m puts the repo root on sys.path (tests import root-level server.py)
+        run: python -m pytest -q
