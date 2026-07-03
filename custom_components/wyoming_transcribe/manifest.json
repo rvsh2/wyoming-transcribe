@@ -1,6 +1,6 @@
 {
   "domain": "wyoming_transcribe",
-  "name": "Wyoming Transcribe",
+  "name": "Cohere-Transcribe-Diarize",
   "codeowners": ["@rvsh2"],
   "config_flow": true,
   "dependencies": ["frontend", "http"],
@@ -9,5 +9,5 @@
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/rvsh2/wyoming-transcribe-diarize/issues",
   "requirements": [],
-  "version": "0.6.0"
+  "version": "0.6.1"
 }

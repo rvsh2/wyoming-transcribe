@@ -61,7 +61,7 @@ class WyomingTranscribeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
                 if not errors:
                     return self.async_create_entry(
-                        title=f"Wyoming Transcribe ({host})",
+                        title=f"Cohere-Transcribe-Diarize ({host})",
                         data={CONF_HOST: host, CONF_PORT: port, CONF_API_TOKEN: token},
                     )
 

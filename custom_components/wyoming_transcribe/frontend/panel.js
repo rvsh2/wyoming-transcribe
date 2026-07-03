@@ -131,7 +131,7 @@ class WyomingTranscribePanel extends HTMLElement {
     root.innerHTML = `
       <style>${STYLES}</style>
       <div class="container">
-        <h1>Wyoming Transcribe</h1>
+        <h1>Cohere-Transcribe-Diarize</h1>
 
         <div class="card">
           <h2>Status serwera</h2>

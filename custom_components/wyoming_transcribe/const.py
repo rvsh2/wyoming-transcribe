@@ -10,5 +10,5 @@ DEFAULT_PORT = 8580
 
 # Sidebar panel (iframe with the enrollment/management UI).
 PANEL_URL_PATH = "wyoming-transcribe"
-PANEL_TITLE = "Wyoming Transcribe"
+PANEL_TITLE = "Cohere-Transcribe-Diarize"
 PANEL_ICON = "mdi:account-voice"

@@ -35,7 +35,7 @@ class WyomingTranscribeSensor(CoordinatorEntity, SensorEntity):
         self._attr_unique_id = f"{entry.entry_id}_{key}"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
-            name="Wyoming Transcribe",
+            name="Cohere-Transcribe-Diarize",
             manufacturer="wyoming-transcribe",
             configuration_url=base_url(entry),
         )
