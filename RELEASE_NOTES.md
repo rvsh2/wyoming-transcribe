@@ -1,5 +1,36 @@
 # Release Notes
 
+## 2026-07-03 (v0.6.0)
+
+### Third review round — quality, latency, robustness
+
+Server:
+
+- **Quiet-point chunking**: long audio is split at the quietest moment within
+  the last 10 s of each 30 s window instead of a hard cut — words are no longer
+  sliced mid-syllable at window boundaries.
+- **Single ECAPA pass**: voiceprints computed while merging windows are reused
+  for speaker identification and the pending-clip save (multi-window audio
+  previously embedded the same speakers twice).
+- **CPU fallback in float32**: when loading the model on the GPU fails, the CPU
+  fallback converts out of bfloat16 (which is very slow on CPU).
+- **Mid-merge embedding failure** assigns fresh speaker indices to remaining
+  windows instead of raw ones that could silently merge two people.
+- **/health without a token no longer names enrolled people** when `API_TOKEN`
+  is set (it keeps `status`/`asr_ready` for healthchecks).
+- Pending clips record `best_match`/`best_score` (closest sub-threshold
+  profile) for threshold tuning; `.adapt.json` is written atomically;
+  `/import` rejects archives over 100 MB.
+
+Integration:
+
+- **`claim_utterance`/`claim_latest` return response data** (claimed clip ids,
+  created samples) so an LLM agent can confirm what was enrolled.
+- **Poll interval 60 s → 15 s**: the `wyoming_transcribe_new_pending` event now
+  lags at most ~15 s behind the utterance.
+
+CI: GitHub Actions workflow running the full pytest suite (131 tests).
+
 ## 2026-07-02 (v0.5.1)
 
 ### Second QA review — 10 findings fixed
