@@ -43,6 +43,14 @@ DIARIZE_PROMPT_TEMPLATE = (
 # Hard per-pass limit of the diarize model; longer audio is split into windows.
 MAX_CHUNK_SECONDS = 30
 
+# Padding kept around the VAD speech span when cropping non-speech audio before
+# generation. Leading/trailing noise makes the diarize model hallucinate
+# (observed on Polish far-field clips: 1.2 s of speech in a 8.9 s clip produced
+# looping gibberish; the cropped clip transcribed correctly). Kept small: the
+# VAD span already includes VAD_SPEECH_PAD_MS, and every extra bit of trailing
+# noise invites end-of-clip babble.
+CROP_PAD_SECONDS = 0.1
+
 # Generation budget per window. When a window's output hits this cap the window
 # is re-transcribed as two shorter ones (down to MIN_SPLIT_SECONDS) so dense
 # speech is not silently truncated.
@@ -134,6 +142,23 @@ def parse_diarized_output(raw: str, offset: float = 0.0, duration: Optional[floa
 
     segments: list[dict] = []
     matches = list(_SEGMENT_RE.finditer(body))
+
+    # The model sometimes emits transcript text BEFORE the first
+    # <|spltokenN|><|t:...|> header (observed on Polish multi-window audio);
+    # dropping it would lose whole sentences. Attribute it to the first
+    # headed speaker, spanning from the window start to their first timestamp.
+    if matches:
+        leading = _SPECIAL_TOKEN_RE.sub("", body[: matches[0].start()]).strip()
+        if leading:
+            segments.append(
+                {
+                    "speaker": int(matches[0].group(1)),
+                    "start": round(offset, 2),
+                    "end": round(float(matches[0].group(2)) + offset, 2),
+                    "text": leading,
+                }
+            )
+
     for index, match in enumerate(matches):
         speaker = int(match.group(1))
         start = float(match.group(2))
@@ -524,10 +549,28 @@ class CohereTranscriber:
 
         start_time = time.time()
 
+        # Only the speech span (plus padding) is sent to generation; segment
+        # timestamps are mapped back to the full-clip timeline via crop_offset,
+        # so speaker clips/pending audio keep using the original audio.
+        crop_start, crop_end = self._speech_bounds(vad_decision, len(audio_data), sample_rate)
+        trimmed_s = (len(audio_data) - (crop_end - crop_start)) / sample_rate
+        if trimmed_s >= 1.0:
+            LOGGER.info(
+                "Trimmed %.1fs of non-speech padding before transcription "
+                "(speech span %.2f-%.2fs of %.2fs)",
+                trimmed_s,
+                crop_start / sample_rate,
+                crop_end / sample_rate,
+                duration_s,
+            )
+        crop_offset = crop_start / sample_rate
+
         windows: list[list[dict]] = []
-        for chunk, offset in chunk_audio(audio_data, sample_rate):
+        for chunk, offset in chunk_audio(audio_data[crop_start:crop_end], sample_rate):
             windows.extend(
-                self._transcribe_window(chunk, offset, sample_rate, resolved_language, temperature)
+                self._transcribe_window(
+                    chunk, crop_offset + offset, sample_rate, resolved_language, temperature
+                )
             )
         segments, merge_embeddings = self._merge_diarized_windows(
             windows, audio_data, sample_rate
@@ -584,6 +627,20 @@ class CohereTranscriber:
             utterance_id=utterance_id,
             text_mode=text_mode,
         )
+
+    @staticmethod
+    def _speech_bounds(vad_decision, total_samples: int, sample_rate: int) -> tuple[int, int]:
+        """Sample range to transcribe: the VAD speech span padded by CROP_PAD_SECONDS.
+
+        Falls back to the full clip when the decision carries no span (VAD
+        disabled, fallback mode, or an inconsistent range).
+        """
+        start = getattr(vad_decision, "speech_start_sample", None)
+        end = getattr(vad_decision, "speech_end_sample", None)
+        if start is None or end is None or not 0 <= start < end <= total_samples:
+            return 0, total_samples
+        pad = int(CROP_PAD_SECONDS * sample_rate)
+        return max(0, start - pad), min(total_samples, end + pad)
 
     def _resolve_prompt_token(self, token: str) -> Optional[int]:
         """Return the token id, or None if the tokenizer lacks it (unk)."""

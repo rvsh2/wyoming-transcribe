@@ -264,6 +264,82 @@ class AudioAndTranscriberTests(unittest.TestCase):
         self.assertEqual(result.segments[0]["speaker"], 0)
         self.assertEqual(result.segments[0]["text"], "speech detected")
 
+    def test_speech_bounds_pads_and_clips_vad_span(self):
+        bounds = CohereTranscriber._speech_bounds
+
+        span = SimpleNamespace(speech_start_sample=96000, speech_end_sample=112000)
+        # 0.1 s pad = 1600 samples at 16 kHz.
+        self.assertEqual(bounds(span, 160000, 16000), (94400, 113600))
+
+        at_edges = SimpleNamespace(speech_start_sample=1000, speech_end_sample=159000)
+        self.assertEqual(bounds(at_edges, 160000, 16000), (0, 160000))
+
+        no_span = SimpleNamespace(speech_start_sample=None, speech_end_sample=None)
+        self.assertEqual(bounds(no_span, 160000, 16000), (0, 160000))
+
+        inverted = SimpleNamespace(speech_start_sample=5000, speech_end_sample=4000)
+        self.assertEqual(bounds(inverted, 160000, 16000), (0, 160000))
+
+    def test_transcription_crops_to_vad_speech_span_and_keeps_global_timestamps(self):
+        transcriber = CohereTranscriber()
+        seen_audio_lengths = []
+
+        class FakeModel:
+            device = "cpu"
+            dtype = torch.float32
+
+            def generate(self, **_kwargs):
+                return torch.tensor([[1, 2, 3]])
+
+        class FakeTokenizer:
+            unk_token_id = 0
+
+            def convert_tokens_to_ids(self, _token):
+                return 5
+
+            def decode(self, *_args, **_kwargs):
+                return "<|diarize|><|spltoken0|><|t:0.0|> która godzina <|t:1.0|><|endoftext|>"
+
+        class FakeProcessor:
+            tokenizer = FakeTokenizer()
+
+            def __call__(self, audio, *_args, **_kwargs):
+                seen_audio_lengths.append(len(audio))
+                return FakeInputs(
+                    input_features=torch.zeros(1, 4, 8),
+                    attention_mask=torch.ones(1, 4),
+                )
+
+        transcriber.model = FakeModel()
+        transcriber.processor = FakeProcessor()
+        # 10 s clip with speech only between 6 s and 7 s.
+        transcriber.vad_detector = SimpleNamespace(
+            detect_speech=lambda *_args, **_kwargs: SimpleNamespace(
+                has_speech=True,
+                reason="speech_detected",
+                speech_segments=1,
+                total_speech_ms=1000,
+                max_segment_ms=1000,
+                speech_rms=0.05,
+                noise_rms=0.005,
+                speech_to_noise_ratio=10.0,
+                speech_start_sample=6 * 16000,
+                speech_end_sample=7 * 16000,
+            )
+        )
+
+        rng = np.random.default_rng(1234)
+        audio = (0.05 * rng.normal(size=10 * 16000)).astype(np.float32)
+        result = transcriber.transcribe_pcm(audio, sample_rate=16000, language="pl")
+
+        # Generation saw only the padded speech span (1 s + 2 * 0.1 s pad).
+        self.assertEqual(seen_audio_lengths, [int(1.2 * 16000)])
+        # Segment timestamps stay on the full-clip timeline (crop start 5.9 s).
+        self.assertEqual(result.segments[0]["start"], 5.9)
+        self.assertEqual(result.segments[0]["end"], 6.9)
+        self.assertEqual(result.duration, 10.0)
+        self.assertEqual(result.text, "Mówca 0: która godzina")
+
     def test_vad_rejects_too_quiet_detected_speech(self):
         transcriber = CohereTranscriber()
         fake_model = SimpleNamespace(device="cpu", dtype=torch.float32)

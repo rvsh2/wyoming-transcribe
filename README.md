@@ -138,7 +138,7 @@ Key environment variables (more in `.env.example` and `compose.yml`):
 | `SPEAKER_ID_ENABLED` | `false` | turn speaker identification on |
 | `SPEAKER_MATCH_THRESHOLD` | `0.35` | cosine threshold; raise to reduce false matches |
 | `SPEAKER_CHAIN_THRESHOLD` | `0.40` | linking the same anonymous speaker across 30 s windows |
-| `VAD_ENABLED` | `true` | Silero-VAD silence/noise filtering |
+| `VAD_ENABLED` | `true` | Silero-VAD silence/noise filtering + speech-span cropping |
 
 Recommended VAD preset for Home Assistant (already in `compose.yml`):
 
@@ -152,6 +152,10 @@ VAD_MIN_MAX_SEGMENT_MS=45
 VAD_MIN_SPEECH_RMS=0.014
 VAD_MIN_SPEECH_TO_NOISE_RATIO=2.6
 ```
+
+With VAD active, audio is also cropped to the detected speech span (±0.1 s)
+before transcription — the mostly-silent padding around short voice commands
+otherwise makes the model hallucinate, especially in non-English languages.
 
 Tuning: hallucinations on silence → raise `VAD_THRESHOLD`; quiet speech-like
 noise passes → raise `VAD_MIN_SPEECH_RMS` / `VAD_MIN_SPEECH_TO_NOISE_RATIO`;

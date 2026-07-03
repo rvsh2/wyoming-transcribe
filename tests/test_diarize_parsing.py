@@ -58,6 +58,29 @@ class ParseDiarizedOutputTests(unittest.TestCase):
         self.assertEqual(segments[0]["text"], "Welcome back.")
         self.assertEqual(segments[0]["end"], 2.4)
 
+    def test_leading_text_before_first_speaker_header_is_kept(self):
+        # Real Polish multi-window failure mode: the model emitted the first
+        # sentences without a <|spltokenN|><|t:...|> header (plus a stray
+        # structural token mid-text) before switching to headed segments.
+        # The parser used to drop that leading text entirely.
+        raw = (
+            "<|startofcontext|><|startoftranscript|><|emo:undefined|><|pl|><|pl|><|pnc|>"
+            "<|noitn|><|timestamp|><|diarize|>"
+            " Robimy nowy test.<|startoftranscript|> Dzień dobry wszystkim.<|t:19.8|>"
+            "<|spltoken0|><|t:18.9|> Jak działa whisper?<|t:26.7|>"
+            "<|spltoken1|><|t:26.1|> To dobrze.<|t:28.0|><|endoftext|>"
+        )
+        segments = parse_diarized_output(raw, offset=5.0)
+        self.assertEqual(
+            [s["text"] for s in segments],
+            ["Robimy nowy test. Dzień dobry wszystkim.", "Jak działa whisper?", "To dobrze."],
+        )
+        # Leading text is attributed to the first headed speaker, spanning
+        # from the window start to that speaker's first timestamp.
+        self.assertEqual(segments[0]["speaker"], 0)
+        self.assertEqual(segments[0]["start"], 5.0)
+        self.assertEqual(segments[0]["end"], 23.9)
+
     def test_plain_text_without_diarize_tokens_falls_back(self):
         segments = parse_diarized_output("just some plain text")
         self.assertEqual(len(segments), 1)

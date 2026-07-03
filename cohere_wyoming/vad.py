@@ -84,6 +84,10 @@ class VadDecision:
     speech_rms: float
     noise_rms: float
     speech_to_noise_ratio: float
+    # Sample range spanning first to last detected speech (None when Silero
+    # timestamps are unavailable, e.g. disabled/fallback modes).
+    speech_start_sample: Optional[int] = None
+    speech_end_sample: Optional[int] = None
 
 
 class SileroVoiceActivityDetector:
@@ -163,6 +167,8 @@ class SileroVoiceActivityDetector:
         speech_rms: float = 0.0,
         noise_rms: float = 0.0,
         speech_to_noise_ratio: float = 0.0,
+        speech_start_sample: Optional[int] = None,
+        speech_end_sample: Optional[int] = None,
     ) -> VadDecision:
         return VadDecision(
             has_speech=has_speech,
@@ -173,6 +179,8 @@ class SileroVoiceActivityDetector:
             speech_rms=speech_rms,
             noise_rms=noise_rms,
             speech_to_noise_ratio=speech_to_noise_ratio,
+            speech_start_sample=speech_start_sample,
+            speech_end_sample=speech_end_sample,
         )
 
     def detect_speech(
@@ -220,6 +228,8 @@ class SileroVoiceActivityDetector:
         max_segment_samples = 0
         speech_samples: list[np.ndarray] = []
         noise_mask = np.ones(len(audio_data), dtype=bool)
+        speech_start_sample: Optional[int] = None
+        speech_end_sample: Optional[int] = None
         for segment in timestamps:
             start = int(segment.get("start", 0))
             end = int(segment.get("end", 0))
@@ -232,6 +242,14 @@ class SileroVoiceActivityDetector:
                 if clipped_end > clipped_start:
                     speech_samples.append(audio_data[clipped_start:clipped_end])
                     noise_mask[clipped_start:clipped_end] = False
+                    if speech_start_sample is None:
+                        speech_start_sample = clipped_start
+                    else:
+                        speech_start_sample = min(speech_start_sample, clipped_start)
+                    if speech_end_sample is None:
+                        speech_end_sample = clipped_end
+                    else:
+                        speech_end_sample = max(speech_end_sample, clipped_end)
 
         total_speech_ms = int(round(total_speech_samples * 1000 / sample_rate))
         max_segment_ms = int(round(max_segment_samples * 1000 / sample_rate))
@@ -269,4 +287,6 @@ class SileroVoiceActivityDetector:
             speech_rms=round(speech_rms, 6),
             noise_rms=round(noise_rms, 6),
             speech_to_noise_ratio=round(speech_to_noise_ratio, 3),
+            speech_start_sample=speech_start_sample,
+            speech_end_sample=speech_end_sample,
         )
