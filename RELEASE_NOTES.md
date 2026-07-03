@@ -1,5 +1,27 @@
 # Release Notes
 
+## 2026-07-04 (v0.7.0)
+
+### Non-English quality: speech-span cropping
+
+Server:
+
+- **Audio is cropped to the VAD speech span before transcription** (±0.1 s
+  padding). Home Assistant satellite clips are mostly non-speech padding — a
+  real Polish clip with 1.2 s of speech in 8.9 s of audio transcribed as
+  looping gibberish; the same clip now transcribes correctly. Non-English
+  languages benefit the most (the diarize fine-tune was trained on English
+  only), and short commands also get faster since the model sees seconds less
+  audio. Applies whenever Silero VAD is active; segment timestamps stay on the
+  full-clip timeline, so speaker ID, pending clips and subtitles are unchanged.
+- **Leading transcript text is no longer dropped**: the model sometimes emits
+  text before the first `<|spltokenN|>` speaker header (observed on Polish
+  multi-window audio); the parser now keeps it, attributed to the first headed
+  speaker, instead of silently losing whole sentences.
+- **ECAPA warmup at startup**: the speaker-embedding encoder was lazy-loaded on
+  the first request, which paid ~1.4 s after every container restart; the first
+  real request now runs at full speed (~0.2 s per voice command).
+
 ## 2026-07-03 (v0.6.0)
 
 ### Third review round — quality, latency, robustness
