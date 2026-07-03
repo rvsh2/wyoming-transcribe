@@ -28,16 +28,18 @@ of the newest clip) and returns a ready `should_ask` verdict — ask only
 "regulars" (defaults: ≥ 3 utterances, ≥ 8 s of speech, newest clip ≤ 300 s
 old).
 
-Recipe — two scripts exposed to Assist as tools:
+Recipe — two scripts exposed to Assist as tools. Script names are arbitrary
+(these match the reference deployment); write the descriptions and the system
+prompt in your household's language — the LLM reads them:
 
 ```yaml
 script:
   sprawdz_nieznany_glos:
-    alias: "Sprawdź nierozpoznany głos"
+    alias: "Check unrecognized voice"
     description: >-
-      Wywołaj, gdy wypowiedź ma prefiks "Mówca N:". Zwraca should_ask —
-      czy warto zapytać tę osobę, kim jest (pyta tylko "bywalców", nie
-      jednorazowych gości).
+      Call when an utterance is prefixed "Mówca N:" (unknown speaker).
+      Returns should_ask — whether this person is worth asking who they
+      are (only "regulars" qualify, not one-off visitors).
     sequence:
       - service: cohere_transcribe_diarize.check_latest_voice
         response_variable: voice
@@ -45,18 +47,18 @@ script:
         response_variable: voice
 
   przypisz_glos:
-    alias: "Przypisz nierozpoznany głos do osoby"
+    alias: "Assign unrecognized voice to a person"
     description: >-
-      Wywołaj po tym, jak nierozpoznana osoba przedstawi się z imienia.
-      Podaj anchor_utterance_id zwrócone przez sprawdz_nieznany_glos —
-      wtedy przypisywany jest dokładnie ten głos, nawet jeśli w
-      międzyczasie odezwał się ktoś inny.
+      Call after the unrecognized person introduces themselves by name.
+      Pass the anchor_utterance_id returned by sprawdz_nieznany_glos —
+      then exactly that voice is enrolled, even if someone else spoke
+      in the meantime.
     fields:
       name:
-        description: "Imię osoby, np. Anna"
+        description: "Person's first name, e.g. Anna"
         required: true
       anchor_utterance_id:
-        description: "utterance_id ze sprawdz_nieznany_glos"
+        description: "utterance_id from sprawdz_nieznany_glos"
         required: false
     sequence:
       - service: cohere_transcribe_diarize.claim_latest
@@ -68,17 +70,18 @@ script:
 System-prompt snippet (includes the anti-overzealousness rules):
 
 ```text
-Wypowiedzi mają prefiks z imieniem mówcy ("Krzysztof: ...") albo "Mówca N:",
-gdy głos jest nierozpoznany. Zasady dla "Mówca N:":
-1. Najpierw normalnie obsłuż polecenie.
-2. Nie pytaj o tożsamość przy krótkich wypowiedziach (mniej niż ~5 słów).
-3. Zanim zapytasz, wywołaj narzędzie sprawdz_nieznany_glos; pytaj tylko gdy
-   should_ask jest true. Zapamiętaj zwrócone utterance_id. Nie pytaj
-   częściej niż raz na rozmowę.
-4. Pytaj: "Nie rozpoznaję Twojego głosu — kim jesteś? Przedstaw się pełnym
-   zdaniem." Proś, by przedstawiła się sama osoba, której głosu nie rozpoznano.
-5. Gdy osoba się przedstawi, wywołaj przypisz_glos z jej imieniem i tym
-   utterance_id jako anchor_utterance_id.
+Utterances are prefixed with the speaker's name ("Krzysztof: ...") or with
+"Mówca N:" when the voice is unrecognized. Rules for "Mówca N:":
+1. Handle the request normally first.
+2. Do not ask about identity for short utterances (fewer than ~5 words).
+3. Before asking, call the sprawdz_nieznany_glos tool; ask only when
+   should_ask is true. Remember the returned utterance_id. Never ask more
+   than once per conversation.
+4. Ask: "I don't recognize your voice — who are you? Please introduce
+   yourself with a full sentence." The person whose voice was not
+   recognized must introduce themselves personally.
+5. When the person introduces themselves, call przypisz_glos with their
+   name and that utterance_id as anchor_utterance_id.
 ```
 
 Known limitations (by design): a very short answer (< ~0.6 s, e.g. just
@@ -105,12 +108,13 @@ is *not* in the text — only the name is (`Krzysztof: zgaś światło`). Keep t
 role policy in your LLM agent's system prompt, keyed by name:
 
 ```text
-Wypowiedzi mają prefiks z imieniem mówcy ("Krzysztof: ...") albo "Mówca N:" gdy
-głos jest nierozpoznany. Zasady:
-- Krzysztof (admin): pełna kontrola domu, w tym zamki, alarm i konfiguracja.
-- Anna (user): sterowanie światłem, muzyką i temperaturą; bez zamków i alarmu.
-- goście / "Mówca N": odpowiadaj tylko na pytania informacyjne, nie wykonuj akcji.
-Gdy wypowiedź przekracza uprawnienia mówcy, odmów i powiedz dlaczego.
+Utterances are prefixed with the speaker's name ("Krzysztof: ...") or with
+"Mówca N:" when the voice is unrecognized. Rules:
+- Krzysztof (admin): full control of the house, including locks, alarm and
+  configuration.
+- Anna (user): lights, music and temperature; no locks or alarm.
+- guests / "Mówca N": answer informational questions only, perform no actions.
+When a request exceeds the speaker's permissions, refuse and say why.
 ```
 
 Simple and works today; the cost is updating the prompt when people change.
@@ -118,13 +122,13 @@ Simple and works today; the cost is updating the prompt when people change.
 **Pattern 2 — `field`/`both` mode, policy keyed by role.** A custom pipeline
 component (or an agent that receives the Wyoming event data) reads `speaker`
 and `speaker_role` from the `Transcript` event and injects one line into the
-LLM context, e.g. `mówca: Krzysztof (rola: admin)`. The prompt then needs only
-the per-role policy, not a per-person list:
+LLM context, e.g. `speaker: Krzysztof (role: admin)`. The prompt then needs
+only the per-role policy, not a per-person list:
 
 ```text
-Kontekst zawiera "mówca: <imię> (rola: <rola>)". Zasady wg roli:
-- admin: wszystkie akcje; user: bez zamków/alarmu/konfiguracji;
-- guest lub brak roli: tylko odpowiedzi informacyjne, żadnych akcji.
+The context contains "speaker: <name> (role: <role>)". Rules by role:
+- admin: all actions; user: no locks/alarm/configuration;
+- guest or no role: informational answers only, no actions.
 ```
 
 **Pattern 3 — automations keyed on role.** The `enrolled_speakers` sensor

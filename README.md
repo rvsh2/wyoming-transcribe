@@ -15,8 +15,9 @@ Mówca 1: We have a game this weekend.
 
 Notes: the model is optimized for English (other languages transcribe but
 diarize less reliably); audio longer than 30 s is split into windows
-automatically and anonymous `Mówca N` labels are kept consistent across windows
-by voiceprint matching.
+automatically and anonymous `Mówca N` labels (`Mówca` is Polish for "Speaker",
+the server's built-in label prefix) are kept consistent across windows by
+voiceprint matching.
 
 ## Quick start (Docker)
 
