@@ -326,9 +326,10 @@ class SpeakerRegistry:
         norm = float(np.linalg.norm(combined))
         return combined / norm if norm > 0.0 else profile
 
-    def _match_embedding(self, embedding: Optional[np.ndarray]) -> SpeakerMatch:
+    def _nearest(self, embedding: Optional[np.ndarray]) -> tuple[Optional[str], float]:
+        """Best-scoring profile name and raw score, ignoring the threshold."""
         if embedding is None or not self._profiles:
-            return SpeakerMatch(None, 0.0)
+            return None, 0.0
 
         best_name: Optional[str] = None
         best_score = -1.0
@@ -336,10 +337,18 @@ class SpeakerRegistry:
             score = float(np.dot(embedding, self._effective_profile(name)))
             if score > best_score:
                 best_name, best_score = name, score
+        return best_name, best_score
 
-        if best_score >= self.threshold:
-            return SpeakerMatch(best_name, round(best_score, 3))
-        return SpeakerMatch(None, round(best_score, 3))
+    def nearest(self, embedding: Optional[np.ndarray]) -> SpeakerMatch:
+        """Closest enrolled profile regardless of the threshold (diagnostics)."""
+        name, score = self._nearest(embedding)
+        return SpeakerMatch(name, round(score, 3))
+
+    def _match_embedding(self, embedding: Optional[np.ndarray]) -> SpeakerMatch:
+        name, score = self._nearest(embedding)
+        if name is not None and score >= self.threshold:
+            return SpeakerMatch(name, round(score, 3))
+        return SpeakerMatch(None, round(score, 3))
 
     def match_embedding(self, embedding: Optional[np.ndarray]) -> SpeakerMatch:
         """Match a precomputed embedding against enrolled profiles."""
@@ -387,10 +396,15 @@ class SpeakerRegistry:
                     return False
                 updated = updated / norm
                 self._adapt[name] = (updated, count + 1)
-                self._adapt_path(name).write_text(
+                # Atomic write (like the other stores): a crash mid-write must
+                # not corrupt the adaptation file.
+                path = self._adapt_path(name)
+                tmp = path.with_suffix(".json.tmp")
+                tmp.write_text(
                     json.dumps({"vector": updated.tolist(), "count": count + 1}),
                     encoding="utf-8",
                 )
+                tmp.replace(path)
             LOGGER.info(
                 "Adapted voiceprint of %s (utterance #%d, score %.3f)", name, count + 1, score
             )

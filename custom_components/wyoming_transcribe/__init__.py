@@ -8,6 +8,7 @@ you?" enrollment flow (claim_utterance, set_role).
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import timedelta
 from pathlib import Path
@@ -39,7 +40,9 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = ["sensor"]
-SCAN_INTERVAL = timedelta(seconds=60)
+# Also the latency ceiling for the new-pending event that drives the
+# "who are you?" flow — keep it short enough that the visitor is still around.
+SCAN_INTERVAL = timedelta(seconds=15)
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15)
 # Uploads (voice samples, backup archives) can take longer than status calls.
 PROXY_TIMEOUT = aiohttp.ClientTimeout(total=120)
@@ -200,31 +203,39 @@ async def _api_post(runtime: dict, path: str, fields: dict) -> dict:
                 f"Wyoming Transcribe API error {response.status} on {path}: {body}"
             )
     await runtime["coordinator"].async_request_refresh()
-    return {}
+    try:
+        return json.loads(body)
+    except ValueError:
+        return {}
 
 
 def _async_register_services(hass: HomeAssistant) -> None:
     if hass.services.has_service(DOMAIN, SERVICE_CLAIM_UTTERANCE):
         return
 
-    async def handle_claim_utterance(call: ServiceCall) -> None:
-        """Enroll a pending utterance (and its voice cluster) as a person."""
+    async def handle_claim_utterance(call: ServiceCall) -> dict:
+        """Enroll a pending utterance (and its voice cluster) as a person.
+
+        Returns the server response ({claimed: [...], samples: [...]}) so an
+        LLM agent can confirm what was actually enrolled.
+        """
         runtime = _runtime_for(hass, call.data.get("host"))
         name = quote(call.data["name"], safe="")
         utterance_id = quote(call.data["utterance_id"], safe="")
-        await _api_post(
+        return await _api_post(
             runtime,
             f"/speakers/{name}/samples/from-utterance/{utterance_id}",
             {"include_cluster": "true" if call.data["include_cluster"] else "false"},
         )
 
-    async def handle_claim_latest(call: ServiceCall) -> None:
+    async def handle_claim_latest(call: ServiceCall) -> dict:
         """Enroll the newest unrecognized utterance (voice-anchored claim).
 
         Designed as an LLM tool for the "who are you?" flow. Pass
         anchor_utterance_id (from check_latest_voice) to claim exactly the
         voice that triggered the question — immune to another unknown voice
-        interjecting between the answer and this call.
+        interjecting between the answer and this call. Returns the server
+        response ({claimed: [...], samples: [...]}).
         """
         runtime = _runtime_for(hass, call.data.get("host"))
         name = quote(call.data["name"], safe="")
@@ -234,7 +245,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
         }
         if call.data.get("anchor_utterance_id"):
             fields["anchor_utterance_id"] = call.data["anchor_utterance_id"]
-        await _api_post(runtime, f"/speakers/{name}/samples/from-latest", fields)
+        return await _api_post(runtime, f"/speakers/{name}/samples/from-latest", fields)
 
     async def handle_check_latest_voice(call: ServiceCall) -> dict:
         """Regular-visitor check for the LLM "who are you?" flow.
@@ -293,10 +304,18 @@ def _async_register_services(hass: HomeAssistant) -> None:
         await _api_post(runtime, f"/speakers/{name}/role", {"role": call.data["role"]})
 
     hass.services.async_register(
-        DOMAIN, SERVICE_CLAIM_UTTERANCE, handle_claim_utterance, schema=CLAIM_UTTERANCE_SCHEMA
+        DOMAIN,
+        SERVICE_CLAIM_UTTERANCE,
+        handle_claim_utterance,
+        schema=CLAIM_UTTERANCE_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
-        DOMAIN, SERVICE_CLAIM_LATEST, handle_claim_latest, schema=CLAIM_LATEST_SCHEMA
+        DOMAIN,
+        SERVICE_CLAIM_LATEST,
+        handle_claim_latest,
+        schema=CLAIM_LATEST_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
         DOMAIN,

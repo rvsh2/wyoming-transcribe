@@ -133,12 +133,31 @@ class ChunkAudioTests(unittest.TestCase):
         self.assertEqual(chunks[0][1], 0.0)
 
     def test_long_audio_is_split_into_30s_windows(self):
+        # Uniform audio has no quiet point to prefer, so full windows are kept.
         audio = np.zeros(16000 * 70, dtype=np.float32)
         chunks = chunk_audio(audio, 16000)
         self.assertEqual(len(chunks), 3)
         self.assertEqual([offset for _, offset in chunks], [0.0, 30.0, 60.0])
         self.assertEqual(len(chunks[0][0]), 16000 * 30)
         self.assertEqual(len(chunks[2][0]), 16000 * 10)
+
+    def test_split_lands_on_quiet_gap_instead_of_hard_boundary(self):
+        sr = 16000
+        t = np.arange(70 * sr, dtype=np.float32) / sr
+        audio = (0.25 * np.sin(2 * np.pi * 440.0 * t)).astype(np.float32)
+        # One second of silence at 26.5-27.5 s; the first window must be cut
+        # there instead of mid-sine at exactly 30 s.
+        audio[int(26.5 * sr) : int(27.5 * sr)] = 0.0
+
+        chunks = chunk_audio(audio, sr)
+
+        offsets = [offset for _, offset in chunks]
+        self.assertEqual(offsets[0], 0.0)
+        self.assertTrue(26.5 <= offsets[1] <= 27.5, offsets)
+        for chunk, _offset in chunks:
+            self.assertLessEqual(len(chunk), 30 * sr)
+        # No samples are lost or duplicated by the search.
+        self.assertEqual(sum(len(chunk) for chunk, _ in chunks), len(audio))
 
 
 if __name__ == "__main__":

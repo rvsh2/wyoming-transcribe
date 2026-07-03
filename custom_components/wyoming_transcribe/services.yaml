@@ -4,6 +4,7 @@ claim_utterance:
     Enroll a pending (unrecognized) utterance as a voice sample of a person.
     The person is created automatically if missing. This is the tool for the
     LLM "who are you?" flow — pass the utterance_id from the Transcript event.
+    Returns the claimed clip ids and created samples as response data.
   fields:
     name:
       name: Person name
@@ -37,7 +38,8 @@ claim_latest:
     the same voice) as a person's samples. The LLM tool for the "who are
     you?" flow — call it right after the person answers with their name; no
     utterance_id needed. Refuses when the newest clip is older than
-    max_age_seconds (the answer may have been too short to buffer).
+    max_age_seconds (the answer may have been too short to buffer). Returns
+    the claimed clip ids and created samples as response data.
   fields:
     name:
       name: Person name

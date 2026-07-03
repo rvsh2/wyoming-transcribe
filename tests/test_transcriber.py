@@ -45,10 +45,12 @@ class AudioAndTranscriberTests(unittest.TestCase):
         class FakeModel:
             def __init__(self):
                 self.moved_to = []
+                self.dtypes = []
                 self.eval_called = False
 
-            def to(self, target_device):
+            def to(self, target_device, dtype=None):
                 self.moved_to.append(str(target_device))
+                self.dtypes.append(dtype)
                 if str(target_device) == "cuda:0":
                     raise torch.OutOfMemoryError("CUDA out of memory")
                 return self
@@ -80,6 +82,9 @@ class AudioAndTranscriberTests(unittest.TestCase):
             transcriber.load("fallback-model")
 
         self.assertEqual(fake_model.moved_to, ["cuda:0", "cpu"])
+        # The dtype was picked for CUDA (bfloat16); the CPU fallback must not
+        # keep it — bf16 on CPU is slow and some ops are unsupported.
+        self.assertEqual(fake_model.dtypes, [None, torch.float32])
         self.assertTrue(fake_model.eval_called)
         self.assertIs(transcriber.model, fake_model)
         self.assertIs(transcriber.processor, fake_processor)
@@ -408,12 +413,15 @@ class SpeakerTextAndIdentificationTests(unittest.TestCase):
         from cohere_wyoming.pending import PendingStore
 
         with tempfile.TemporaryDirectory() as tmp:
+            from cohere_wyoming.speaker_id import SpeakerMatch
+
             transcriber = CohereTranscriber()
             transcriber.pending_store = PendingStore(tmp)
             embedding = np.array([0.6, 0.8], dtype=np.float32)
             transcriber.speaker_registry = SimpleNamespace(
                 enabled=True,
                 embed=lambda _clip: embedding,
+                nearest=lambda _embedding: SpeakerMatch("Anna", 0.31),
             )
             # Dominant speaker 0 (4s) vs speaker 1 (1s).
             segments = [
@@ -431,6 +439,9 @@ class SpeakerTextAndIdentificationTests(unittest.TestCase):
             self.assertEqual(len(clips), 1)
             self.assertAlmostEqual(clips[0]["seconds"], 4.0, places=1)
             self.assertEqual(clips[0]["embedding"], embedding.tolist())
+            # Closest (sub-threshold) profile is recorded for threshold tuning.
+            self.assertEqual(clips[0]["best_match"], "Anna")
+            self.assertEqual(clips[0]["best_score"], 0.31)
 
     def test_save_pending_utterance_never_raises(self):
         transcriber = CohereTranscriber()
@@ -471,7 +482,7 @@ class MergeDiarizedWindowsTests(unittest.TestCase):
             self._window(0, 35.0, 45.0, "bob speaking"),
         ]
 
-        merged = transcriber._merge_diarized_windows(
+        merged, _embeddings = transcriber._merge_diarized_windows(
             windows, np.zeros(70 * 16000, dtype=np.float32), 16000
         )
 
@@ -486,7 +497,7 @@ class MergeDiarizedWindowsTests(unittest.TestCase):
             self._window(0, 35.0, 45.0, "alice part two"),
         ]
 
-        merged = transcriber._merge_diarized_windows(
+        merged, _embeddings = transcriber._merge_diarized_windows(
             windows, np.zeros(70 * 16000, dtype=np.float32), 16000
         )
 
@@ -500,7 +511,7 @@ class MergeDiarizedWindowsTests(unittest.TestCase):
             self._window(0, 35.0, 45.0, "second window"),
         ]
 
-        merged = transcriber._merge_diarized_windows(
+        merged, _embeddings = transcriber._merge_diarized_windows(
             windows, np.zeros(70 * 16000, dtype=np.float32), 16000
         )
 
@@ -520,11 +531,86 @@ class MergeDiarizedWindowsTests(unittest.TestCase):
             self._window(0, 35.0, 45.0, "second window"),
         ]
 
-        merged = transcriber._merge_diarized_windows(
+        merged, _embeddings = transcriber._merge_diarized_windows(
             windows, np.zeros(70 * 16000, dtype=np.float32), 16000
         )
 
         self.assertEqual([segment["speaker"] for segment in merged], [0, 0])
+
+    def test_embedding_failure_mid_merge_assigns_fresh_indices(self):
+        transcriber = CohereTranscriber()
+        calls = {"count": 0}
+
+        def embed_batch(_clips):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                return [np.array([1.0, 0.0], dtype=np.float32)]
+            raise RuntimeError("CUDA OOM")
+
+        transcriber.speaker_registry = SimpleNamespace(enabled=True, embed_batch=embed_batch)
+        windows = [
+            self._window(0, 0.0, 10.0, "first window"),
+            self._window(0, 35.0, 45.0, "second window"),
+        ]
+
+        merged, _embeddings = transcriber._merge_diarized_windows(
+            windows, np.zeros(70 * 16000, dtype=np.float32), 16000
+        )
+
+        # After a mid-merge failure, the second window's raw index 0 must NOT
+        # collide with the already-assigned global index 0 (different people
+        # could be silently merged) — it gets a fresh index instead.
+        self.assertEqual([segment["speaker"] for segment in merged], [0, 1])
+
+    def test_merge_returns_reusable_speaker_embeddings(self):
+        transcriber = CohereTranscriber()
+        alice = np.array([1.0, 0.0], dtype=np.float32)
+        transcriber.speaker_registry = self._registry([[alice], [alice.copy()]])
+        windows = [
+            self._window(0, 0.0, 10.0, "alice part one"),
+            self._window(0, 35.0, 45.0, "alice part two"),
+        ]
+
+        _merged, embeddings = transcriber._merge_diarized_windows(
+            windows, np.zeros(70 * 16000, dtype=np.float32), 16000
+        )
+
+        self.assertEqual(list(embeddings), [0])
+        np.testing.assert_allclose(embeddings[0], alice, atol=1e-6)
+
+    def test_identify_speakers_reuses_provided_embeddings(self):
+        from cohere_wyoming.speaker_id import SpeakerMatch
+
+        transcriber = CohereTranscriber()
+
+        class FakeRegistry:
+            enabled = True
+
+            def reload_if_changed(self):
+                return False
+
+            def has_profiles(self):
+                return True
+
+            def embed_batch(self, clips):
+                raise AssertionError("must not re-embed already-known speakers")
+
+            def match_embedding(self, embedding):
+                return SpeakerMatch("Krzysztof", 0.8)
+
+            def adapt(self, name, embedding, score):
+                return False
+
+        transcriber.speaker_registry = FakeRegistry()
+        segments = [{"speaker": 0, "start": 0.0, "end": 1.0, "text": "hej"}]
+        provided = {0: np.array([1.0, 0.0], dtype=np.float32)}
+
+        result = transcriber._identify_speakers(
+            segments, np.zeros(2 * 16000, dtype=np.float32), 16000, provided
+        )
+
+        self.assertEqual(segments[0]["name"], "Krzysztof")
+        self.assertIs(result[0], provided[0])
 
     def test_two_speakers_per_window_are_matched_pairwise(self):
         transcriber = CohereTranscriber()
@@ -537,7 +623,7 @@ class MergeDiarizedWindowsTests(unittest.TestCase):
             self._window(0, 35.0, 40.0, "bob again") + self._window(1, 40.0, 45.0, "alice again"),
         ]
 
-        merged = transcriber._merge_diarized_windows(
+        merged, _embeddings = transcriber._merge_diarized_windows(
             windows, np.zeros(70 * 16000, dtype=np.float32), 16000
         )
 

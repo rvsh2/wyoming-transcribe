@@ -123,7 +123,7 @@ class CohereTranscribeApiTests(unittest.TestCase):
         with patch.object(server.service, "model_name", "CohereLabs/test-model"), patch.object(
             server.service, "device", "cuda:0"
         ), patch.object(server.service, "backend", "native"):
-            response = self.run_async(server.health())
+            response = self.run_async(server.health(SimpleNamespace(headers={})))
 
         payload = self.decode_json_response(response)
         self.assertEqual(payload["status"], "ok")
@@ -472,15 +472,36 @@ class CohereTranscribeApiTests(unittest.TestCase):
     def test_health_reports_asr_ready(self):
         # Model "loaded" in this process (setUp patches it) -> asr_ready True
         # without probing any port.
-        payload = self.decode_json_response(self.run_async(server.health()))
+        request = SimpleNamespace(headers={})
+        payload = self.decode_json_response(self.run_async(server.health(request)))
         self.assertTrue(payload["asr_ready"])
 
         with patch.object(server.service, "model", None), patch.object(
             server, "WYOMING_PROBE_PORT", 1
         ):
-            payload = self.decode_json_response(self.run_async(server.health()))
+            payload = self.decode_json_response(self.run_async(server.health(request)))
         self.assertFalse(payload["asr_ready"])
         self.assertFalse(payload["ready"])
+
+    def test_health_hides_speaker_names_from_unauthenticated_callers(self):
+        from fastapi.testclient import TestClient
+
+        speaker_status = {
+            "enabled": True,
+            "speakers": ["Krzysztof", "Anna"],
+            "enrollment_dir": "/data/speakers",
+        }
+        with patch.object(server, "API_TOKEN", "sekret"), patch.object(
+            server.service.speaker_registry, "status_payload", return_value=speaker_status
+        ):
+            client = TestClient(server.app)
+            # /health stays open (container healthcheck), but must not name
+            # the enrolled household members without the token.
+            payload = client.get("/health").json()
+            self.assertEqual(payload["speaker_id"], {"enabled": True})
+
+            payload = client.get("/health", headers={"X-API-Token": "sekret"}).json()
+            self.assertEqual(payload["speaker_id"]["speakers"], ["Krzysztof", "Anna"])
 
     def test_export_import_roundtrip(self):
         import tarfile
@@ -763,7 +784,11 @@ class CohereTranscribeApiTests(unittest.TestCase):
     def test_silent_audio_returns_empty_transcription_without_model_call(self):
         silent_audio = np.zeros(16000, dtype=np.float32)
 
-        with patch.object(server, "transcribe_audio") as transcribe_audio:
+        # The silence short-circuit lives in transcribe_pcm (shared with the
+        # Wyoming path); generation must never run for silent audio.
+        with patch.object(server.service, "model", object()), patch.object(
+            server.service, "processor", object()
+        ), patch.object(server.service, "_generate_diarized") as generate:
             result = server.run_transcription_request(
                 audio_data=silent_audio,
                 sr=16000,
@@ -775,7 +800,7 @@ class CohereTranscribeApiTests(unittest.TestCase):
         self.assertEqual(result["language"], "pl")
         self.assertEqual(result["duration"], 1.0)
         self.assertEqual(result["processing_time"], 0.0)
-        transcribe_audio.assert_not_called()
+        generate.assert_not_called()
 
     def test_cli_no_longer_exposes_trust_remote_code_flags(self):
         argv = ["server.py"]

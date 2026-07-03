@@ -65,18 +65,55 @@ _SEGMENT_RE = re.compile(
 _SPECIAL_TOKEN_RE = re.compile(r"<\|[^|>]*\|>")
 
 
+# When long audio must be windowed, the cut is placed on the quietest moment
+# within the last SPLIT_SEARCH_SECONDS of the window instead of a hard cut at
+# exactly max_seconds, so words are not sliced mid-syllable.
+SPLIT_SEARCH_SECONDS = 10
+_SPLIT_FRAME_MS = 30
+
+
+def _quietest_split(
+    audio_data: np.ndarray, search_start: int, search_end: int, sample_rate: int
+) -> int:
+    """Sample index of the quietest moment in [search_start, search_end)."""
+    frame = max(1, int(sample_rate * _SPLIT_FRAME_MS / 1000))
+    segment = np.asarray(audio_data[search_start:search_end], dtype=np.float32)
+    frame_count = len(segment) // frame
+    if frame_count < 2:
+        return search_end
+    frames = segment[: frame_count * frame].reshape(frame_count, frame)
+    rms = np.sqrt(np.mean(np.square(frames), axis=1))
+    # Prefer the LAST near-quietest frame: on uniform audio this keeps full
+    # windows instead of always cutting at the search-region start.
+    threshold = float(rms.min()) * 1.25 + 1e-9
+    index = int(np.nonzero(rms <= threshold)[0][-1])
+    split = search_start + index * frame + frame // 2
+    if search_end - split <= frame * 2:
+        return search_end
+    return split
+
+
 def chunk_audio(audio_data: np.ndarray, sample_rate: int, max_seconds: int = MAX_CHUNK_SECONDS):
-    """Split audio into windows no longer than max_seconds, with second offsets."""
+    """Split audio into windows no longer than max_seconds, with second offsets.
+
+    Split points land on the quietest moment near each window's end (see
+    _quietest_split) so speech is not cut mid-word at the window boundary.
+    """
     max_samples = int(max_seconds * sample_rate)
     if max_samples <= 0 or len(audio_data) <= max_samples:
         return [(audio_data, 0.0)]
 
+    search_samples = min(int(SPLIT_SEARCH_SECONDS * sample_rate), max_samples // 2)
     chunks = []
-    for start in range(0, len(audio_data), max_samples):
-        chunk = audio_data[start : start + max_samples]
-        if len(chunk) == 0:
-            continue
-        chunks.append((chunk, start / sample_rate))
+    start = 0
+    while len(audio_data) - start > max_samples:
+        window_end = start + max_samples
+        split = _quietest_split(
+            audio_data, window_end - search_samples, window_end, sample_rate
+        )
+        chunks.append((audio_data[start:split], start / sample_rate))
+        start = split
+    chunks.append((audio_data[start:], start / sample_rate))
     return chunks
 
 
@@ -367,19 +404,20 @@ class CohereTranscriber:
                 "" if gpu_count == 1 else "s",
                 primary_gpu_name,
             )
+            next_device = self._select_device()
             try:
-                next_device = self._select_device()
                 next_model = next_model.to(next_device)
             except (RuntimeError, torch.OutOfMemoryError) as error:
                 LOGGER.warning(
-                    "Falling back to CPU because loading the model on %s failed: %s",
+                    "Falling back to CPU (float32) because loading the model on %s failed: %s",
                     next_device,
                     error,
                 )
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                torch.cuda.empty_cache()
                 next_device = torch.device("cpu")
-                next_model = next_model.to(next_device)
+                # The dtype was chosen for CUDA (bfloat16); on CPU bf16 is slow
+                # and some ops are unsupported, so the fallback runs in float32.
+                next_model = next_model.to(next_device, dtype=torch.float32)
         else:
             next_device = self._select_device()
             next_model = next_model.to(next_device)
@@ -491,9 +529,13 @@ class CohereTranscriber:
             windows.extend(
                 self._transcribe_window(chunk, offset, sample_rate, resolved_language, temperature)
             )
-        segments = self._merge_diarized_windows(windows, audio_data, sample_rate)
+        segments, merge_embeddings = self._merge_diarized_windows(
+            windows, audio_data, sample_rate
+        )
 
-        self._identify_speakers(segments, audio_data, sample_rate)
+        speaker_embeddings = self._identify_speakers(
+            segments, audio_data, sample_rate, merge_embeddings
+        )
         dominant_name, dominant_score = self._dominant_speaker(segments)
         text = render_speaker_text(segments, mode=text_mode)
 
@@ -502,7 +544,9 @@ class CohereTranscriber:
         if dominant_name and self.speaker_registry is not None:
             speaker_role = read_role(self.speaker_registry.enrollment_dir, dominant_name)
         elif text.strip():
-            utterance_id = self._save_pending_utterance(segments, audio_data, sample_rate, text)
+            utterance_id = self._save_pending_utterance(
+                segments, audio_data, sample_rate, text, speaker_embeddings
+            )
 
         if self.recognition_log is not None and text.strip():
             self.recognition_log.append(
@@ -717,7 +761,7 @@ class CohereTranscriber:
         windows: list[list[dict]],
         audio_data: np.ndarray,
         sample_rate: int,
-    ) -> list[dict]:
+    ) -> tuple[list[dict], dict[int, np.ndarray]]:
         """Merge per-window diarized segments onto one global speaker space.
 
         Diarize speaker indices restart at 0 in every generation window, so the
@@ -728,16 +772,23 @@ class CohereTranscriber:
         silently merging two people is not.
 
         Without the embedding backend (speaker ID disabled, or embedding
-        failure) the model's own indices are kept as-is across windows: a
-        single speaker then stays one "Mówca 0" instead of being shredded into
-        per-window speakers, at the cost of the (pre-existing) risk that two
-        different people sharing index 0 in different windows get merged.
+        failure before any window was merged) the model's own indices are kept
+        as-is across windows: a single speaker then stays one "Mówca 0" instead
+        of being shredded into per-window speakers, at the cost of the
+        (pre-existing) risk that two different people sharing index 0 in
+        different windows get merged. When embeddings fail mid-merge, later
+        windows get fresh indices instead — their raw indices would collide
+        with already-assigned global ones and silently merge two people.
+
+        Returns the merged segments plus one L2-normalized ECAPA voiceprint per
+        global speaker (empty when embeddings were unavailable), so speaker
+        identification does not have to re-embed the same audio.
         """
         windows = [window for window in windows if window]
         if not windows:
-            return []
+            return [], {}
         if len(windows) == 1:
-            return windows[0]
+            return windows[0], {}
 
         registry = self.speaker_registry
         use_embeddings = registry is not None and registry.enabled
@@ -746,24 +797,16 @@ class CohereTranscriber:
         # global speaker index -> (sum of L2-normalized embeddings, count)
         profiles: dict[int, tuple[np.ndarray, int]] = {}
         next_index = 0
-        total_samples = len(audio_data)
 
         for window in windows:
             local_speakers = sorted({segment["speaker"] for segment in window})
 
             embeddings: dict[int, np.ndarray] = {}
             if use_embeddings:
-                clips: list[Optional[np.ndarray]] = []
-                for local in local_speakers:
-                    parts = []
-                    for segment in window:
-                        if segment["speaker"] != local:
-                            continue
-                        start = max(0, int(segment["start"] * sample_rate))
-                        end = min(total_samples, int(segment["end"] * sample_rate))
-                        if end > start:
-                            parts.append(audio_data[start:end])
-                    clips.append(np.concatenate(parts) if parts else None)
+                clips = [
+                    self._speaker_clip(window, local, audio_data, sample_rate)
+                    for local in local_speakers
+                ]
                 try:
                     for local, embedding in zip(local_speakers, registry.embed_batch(clips)):
                         if embedding is not None:
@@ -778,8 +821,18 @@ class CohereTranscriber:
                     embeddings = {}
 
             if not use_embeddings:
-                # No voiceprints to compare: preserve the model's raw indices
-                # (see docstring) instead of inventing fresh speakers.
+                if profiles:
+                    # Mid-merge failure: earlier windows already occupy global
+                    # indices, so this window's raw indices could silently
+                    # merge two different people. Assign fresh indices instead.
+                    fallback_mapping = {}
+                    for local in local_speakers:
+                        fallback_mapping[local] = next_index
+                        next_index += 1
+                    for segment in window:
+                        segment["speaker"] = fallback_mapping[segment["speaker"]]
+                # Otherwise no voiceprints were ever compared: preserve the
+                # model's raw indices (see docstring).
                 merged.extend(window)
                 continue
 
@@ -820,68 +873,98 @@ class CohereTranscriber:
                 segment["speaker"] = mapping[segment["speaker"]]
             merged.extend(window)
 
-        return merged
+        speaker_embeddings: dict[int, np.ndarray] = {}
+        for global_index, (vector_sum, count) in profiles.items():
+            mean = vector_sum / count
+            norm = float(np.linalg.norm(mean))
+            if norm > 0.0:
+                speaker_embeddings[global_index] = (mean / norm).astype(np.float32)
+        return merged, speaker_embeddings
+
+    @staticmethod
+    def _speaker_clip(
+        segments: list[dict],
+        speaker_id: Optional[int],
+        audio_data: np.ndarray,
+        sample_rate: int,
+    ) -> Optional[np.ndarray]:
+        """Concatenate one speaker's segments into a single clip (None if empty)."""
+        total_samples = len(audio_data)
+        parts = []
+        for segment in segments:
+            if segment["speaker"] != speaker_id:
+                continue
+            start = max(0, int(segment["start"] * sample_rate))
+            end = min(total_samples, int(segment["end"] * sample_rate))
+            if end > start:
+                parts.append(audio_data[start:end])
+        return np.concatenate(parts) if parts else None
 
     def _identify_speakers(
-        self, segments: list[dict], audio_data: np.ndarray, sample_rate: int
-    ) -> None:
+        self,
+        segments: list[dict],
+        audio_data: np.ndarray,
+        sample_rate: int,
+        embeddings: Optional[dict[int, np.ndarray]] = None,
+    ) -> dict[int, np.ndarray]:
         """Annotate segments with enrolled names, matching once per diarized speaker.
 
-        All of a speaker's segments are concatenated into one clip before
-        embedding: voice commands are often split into sub-0.4 s segments too
-        short for a reliable voiceprint on their own, while the concatenation
-        matches well. The name is then applied to all of that speaker's segments.
+        Voiceprints already computed by _merge_diarized_windows are reused via
+        ``embeddings``; only speakers without one get embedded here. All of a
+        speaker's segments are concatenated into one clip before embedding:
+        voice commands are often split into sub-0.4 s segments too short for a
+        reliable voiceprint on their own, while the concatenation matches well.
+        The name is then applied to all of that speaker's segments.
+
+        Returns the per-speaker embeddings (input ones plus any computed here)
+        so the pending-clip save can reuse them too.
         """
+        embeddings = dict(embeddings) if embeddings else {}
         registry = self.speaker_registry
         if registry is None or not registry.enabled or not segments:
-            return
+            return embeddings
 
         try:
             registry.reload_if_changed()
         except Exception as error:
             LOGGER.warning("Speaker enrollment reload failed: %s", error)
-            return
+            return embeddings
 
         if not registry.has_profiles():
-            return
+            return embeddings
 
-        total_samples = len(audio_data)
         speaker_ids = sorted({segment["speaker"] for segment in segments})
-        clips: list[Optional[np.ndarray]] = []
-        for speaker_id in speaker_ids:
-            parts = []
-            for segment in segments:
-                if segment["speaker"] != speaker_id:
-                    continue
-                start = max(0, int(segment["start"] * sample_rate))
-                end = min(total_samples, int(segment["end"] * sample_rate))
-                if end > start:
-                    parts.append(audio_data[start:end])
-            clips.append(np.concatenate(parts) if parts else None)
+        missing = [sid for sid in speaker_ids if sid not in embeddings]
+        if missing:
+            clips = [
+                self._speaker_clip(segments, sid, audio_data, sample_rate)
+                for sid in missing
+            ]
+            try:
+                for sid, embedding in zip(missing, registry.embed_batch(clips)):
+                    if embedding is not None:
+                        embeddings[sid] = embedding
+            except Exception as error:
+                LOGGER.warning("Speaker identification failed: %s", error)
+                return embeddings
 
-        try:
-            embeddings = registry.embed_batch(clips)
-            matches = [registry.match_embedding(embedding) for embedding in embeddings]
-        except Exception as error:
-            LOGGER.warning("Speaker identification failed: %s", error)
-            return
-
-        named = {
-            speaker_id: match
-            for speaker_id, match in zip(speaker_ids, matches)
-            if match.name
+        matches = {
+            sid: registry.match_embedding(embeddings.get(sid)) for sid in speaker_ids
         }
         for segment in segments:
-            match = named.get(segment["speaker"])
-            if match is not None:
+            match = matches.get(segment["speaker"])
+            if match is not None and match.name:
                 segment["name"] = match.name
                 segment["score"] = match.score
 
         # Confident recognitions feed the person's adaptive voiceprint, so
         # profiles track real usage conditions (mics, rooms, voice drift).
-        for speaker_id, match, embedding in zip(speaker_ids, matches, embeddings):
+        for sid, match in matches.items():
+            embedding = embeddings.get(sid)
             if match.name and embedding is not None:
                 registry.adapt(match.name, embedding, match.score)
+
+        return embeddings
 
     @staticmethod
     def _dominant_speaker_index(segments: list[dict]) -> Optional[int]:
@@ -911,13 +994,15 @@ class CohereTranscriber:
         audio_data: np.ndarray,
         sample_rate: int,
         text: str,
+        embeddings: Optional[dict[int, np.ndarray]] = None,
     ) -> Optional[str]:
         """Buffer the unrecognized dominant speaker's audio for later enrollment.
 
         The clip (that speaker's concatenated segments) lands in the pending
-        store with its transcript and ECAPA embedding; the returned utterance
-        id is exposed in the Transcript event so an LLM pipeline can ask "who
-        is speaking?" and claim the clip for a person. Never raises.
+        store with its transcript and ECAPA embedding (reused from speaker
+        identification when available); the returned utterance id is exposed in
+        the Transcript event so an LLM pipeline can ask "who is speaking?" and
+        claim the clip for a person. Never raises.
         """
         store = self.pending_store
         registry = self.speaker_registry
@@ -926,26 +1011,37 @@ class CohereTranscriber:
 
         try:
             dominant = self._dominant_speaker_index(segments)
-            total_samples = len(audio_data)
-            parts = []
-            for segment in segments:
-                if segment["speaker"] != dominant:
-                    continue
-                start = max(0, int(segment["start"] * sample_rate))
-                end = min(total_samples, int(segment["end"] * sample_rate))
-                if end > start:
-                    parts.append(audio_data[start:end])
-            if not parts:
+            clip = self._speaker_clip(segments, dominant, audio_data, sample_rate)
+            if clip is None:
                 return None
-            clip = np.concatenate(parts)
 
-            embedding = None
-            try:
-                embedding = registry.embed(clip)
-            except Exception as error:
-                LOGGER.warning("Pending-clip embedding failed (saving without): %s", error)
+            embedding = (embeddings or {}).get(dominant)
+            if embedding is None:
+                try:
+                    embedding = registry.embed(clip)
+                except Exception as error:
+                    LOGGER.warning("Pending-clip embedding failed (saving without): %s", error)
 
-            return store.save(clip, sample_rate, text=text, embedding=embedding)
+            # Closest enrolled profile (below threshold, or there would be no
+            # pending clip) — recorded for threshold tuning in the UI/history.
+            best_match = None
+            best_score = None
+            if embedding is not None:
+                try:
+                    near = registry.nearest(embedding)
+                    if near.name is not None:
+                        best_match, best_score = near.name, near.score
+                except Exception as error:
+                    LOGGER.debug("Nearest-profile lookup for pending clip failed: %s", error)
+
+            return store.save(
+                clip,
+                sample_rate,
+                text=text,
+                embedding=embedding,
+                best_match=best_match,
+                best_score=best_score,
+            )
         except Exception as error:
             LOGGER.warning("Could not save pending utterance: %s", error)
             return None

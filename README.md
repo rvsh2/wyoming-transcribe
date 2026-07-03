@@ -264,7 +264,7 @@ The integration also gives automations and LLM tools native HA hooks:
   the `wyoming_transcribe_new_pending` event data.
 - **Service `wyoming_transcribe.set_role`** (`name`, `role`: admin/user/guest).
 
-Note: pending clips are polled every 60 s, so the event can lag up to a minute
+Note: pending clips are polled every 15 s, so the event can lag up to 15 s
 behind the utterance.
 
 Install:

@@ -30,13 +30,12 @@ from fastapi.responses import (
     Response,
 )
 
-from cohere_wyoming.audio import is_effectively_silent, read_audio_to_numpy
+from cohere_wyoming.audio import read_audio_to_numpy
 from cohere_wyoming.enrollment import SPEAKER_ROLES, EnrollmentError, EnrollmentStore
 from cohere_wyoming.history import RecognitionLog
 from cohere_wyoming.pending import PendingError, PendingStore
 from cohere_wyoming.transcriber import (
     CohereTranscriber,
-    LANGUAGE_ALIASES,
     SPEAKER_LABEL,
     SUPPORTED_LANGUAGES,
 )
@@ -60,25 +59,6 @@ INDEX_TEMPLATE_PATH = Path(__file__).resolve().parent / "cohere_wyoming" / "temp
 IGNORED_WHISPER_PARAMS = ("temperature_inc", "prompt", "encode", "no_timestamps")
 
 
-def sync_legacy_globals() -> None:
-    """Keep legacy module globals available for compatibility and tests."""
-    global model, processor, device, model_id, default_language, model_backend
-    model = service.model
-    processor = service.processor
-    device = service.device
-    model_id = service.model_name
-    default_language = service.default_language
-    model_backend = service.backend
-
-
-sync_legacy_globals()
-
-
-def load_model(model_name: str):
-    service.load(model_name)
-    sync_legacy_globals()
-
-
 async def read_upload_audio(file: UploadFile) -> tuple[np.ndarray, int]:
     try:
         file_bytes = await file.read()
@@ -91,26 +71,6 @@ async def read_upload_audio(file: UploadFile) -> tuple[np.ndarray, int]:
         raise HTTPException(status_code=400, detail=str(err)) from err
     except Exception as err:
         raise HTTPException(status_code=400, detail=f"Error reading audio: {err}") from err
-
-
-def resolve_language(language: Optional[str]) -> str:
-    if language is None:
-        return service.default_language
-
-    resolved = language.strip().lower()
-    if resolved == "auto":
-        return service.default_language
-
-    resolved = LANGUAGE_ALIASES.get(resolved, resolved)
-    if resolved not in SUPPORTED_LANGUAGES:
-        logger.warning(
-            "Language '%s' not supported by Cohere Transcribe. Falling back to '%s'.",
-            resolved,
-            service.default_language,
-        )
-        return service.default_language
-
-    return resolved
 
 
 def ensure_model_loaded() -> None:
@@ -248,11 +208,6 @@ def format_openai_response(response_format: str, result: dict):
     return JSONResponse({"text": text})
 
 
-def health_payload() -> dict:
-    sync_legacy_globals()
-    return service.health_payload()
-
-
 # Where the Wyoming ASR process listens (same container in the shipped
 # deployment); lets the --no-load-model UI process report real ASR readiness.
 WYOMING_PROBE_HOST = os.environ.get("WYOMING_PROBE_HOST", "127.0.0.1")
@@ -350,23 +305,12 @@ def run_transcription_request(
     language: Optional[str],
     temperature: float,
 ) -> dict:
-    resolved_language = resolve_language(language)
-    duration = round(len(audio_data) / sr, 2) if sr else 0.0
-
-    if is_effectively_silent(audio_data):
-        logger.info("No speech detected above silence threshold; returning empty transcription")
-        return {
-            "text": "",
-            "language": resolved_language,
-            "duration": duration,
-            "processing_time": 0.0,
-        }
-
+    # Silence short-circuiting lives in transcribe_pcm (shared with Wyoming).
     try:
         return transcribe_audio(
             audio_data,
             sr=sr,
-            language=resolved_language,
+            language=service.resolve_language(language),
             temperature=temperature,
         )
     except Exception as err:
@@ -401,22 +345,26 @@ if API_TOKEN is not None and not API_TOKEN.isascii():
 OPEN_PATHS = {"/", "/health"}
 
 
+def request_has_valid_token(request: Request) -> bool:
+    """True when no token is configured, or the request carries the right one."""
+    if API_TOKEN is None:
+        return True
+    provided = request.headers.get("x-api-token", "")
+    if not provided:
+        authorization = request.headers.get("authorization", "")
+        if authorization.lower().startswith("bearer "):
+            provided = authorization[7:]
+    # Compare as bytes: compare_digest on str raises TypeError for
+    # non-ASCII input, which would turn an auth failure into a 500.
+    return secrets.compare_digest(provided.encode("utf-8"), API_TOKEN.encode("utf-8"))
+
+
 @app.middleware("http")
 async def require_api_token(request: Request, call_next):
-    if API_TOKEN is not None and request.url.path not in OPEN_PATHS:
-        provided = request.headers.get("x-api-token", "")
-        if not provided:
-            authorization = request.headers.get("authorization", "")
-            if authorization.lower().startswith("bearer "):
-                provided = authorization[7:]
-        # Compare as bytes: compare_digest on str raises TypeError for
-        # non-ASCII input, which would turn an auth failure into a 500.
-        if not secrets.compare_digest(
-            provided.encode("utf-8"), API_TOKEN.encode("utf-8")
-        ):
-            return JSONResponse(
-                {"detail": "Invalid or missing API token"}, status_code=401
-            )
+    if request.url.path not in OPEN_PATHS and not request_has_valid_token(request):
+        return JSONResponse(
+            {"detail": "Invalid or missing API token"}, status_code=401
+        )
     return await call_next(request)
 
 
@@ -426,8 +374,14 @@ async def index():
 
 
 @app.get("/health")
-async def health():
-    payload = health_payload()
+async def health(request: Request):
+    payload = service.health_payload()
+    # /health must stay open for the container healthcheck, but the full
+    # speaker_id payload names the enrolled household members. When a token is
+    # configured, unauthenticated callers only learn whether speaker ID is on.
+    if not request_has_valid_token(request):
+        speaker_status = payload.get("speaker_id") or {}
+        payload["speaker_id"] = {"enabled": speaker_status.get("enabled", False)}
     # "ready" describes THIS process's model; "asr_ready" answers the question
     # monitoring actually asks — is speech-to-text serving? In the shipped
     # docker setup this process runs --no-load-model and the Wyoming process
@@ -497,7 +451,7 @@ async def load(model_path: Optional[str] = Form(None, alias="model")):
         raise HTTPException(status_code=400, detail="No model path provided")
 
     try:
-        await asyncio.to_thread(load_model, model_path.strip())
+        await asyncio.to_thread(service.load, model_path.strip())
         return JSONResponse({"status": "ok", "model": model_path.strip()})
     except Exception as err:
         logger.error("Failed to load model: %s", err, exc_info=True)
@@ -599,11 +553,20 @@ async def export_enrollment():
     )
 
 
+# Voice-sample backups are megabytes; anything bigger is a mistake (or abuse).
+MAX_IMPORT_BYTES = 100 * 1024 * 1024
+
+
 @app.post("/import")
 async def import_enrollment(file: UploadFile = File(...)):
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="Empty archive upload")
+    if len(data) > MAX_IMPORT_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Archive exceeds the {MAX_IMPORT_BYTES // (1024 * 1024)} MB import limit",
+        )
     try:
         restored = await asyncio.to_thread(_restore_export_archive, data)
     except ValueError as err:
@@ -879,7 +842,6 @@ def main():
             threshold=args.vad_threshold if args.vad_threshold is not None else default_vad_config.threshold,
         )
     )
-    sync_legacy_globals()
     torch.set_num_threads(args.threads)
 
     if args.no_gpu:
@@ -894,7 +856,7 @@ def main():
     if args.no_load_model:
         logger.info("Skipping ASR model load (enrollment UI / API only mode)")
     else:
-        load_model(args.model)
+        service.load(args.model)
 
     logger.info("Starting server on %s:%s", args.host, args.port)
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
