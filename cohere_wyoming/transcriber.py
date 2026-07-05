@@ -330,6 +330,9 @@ class CohereTranscriber:
         # Consecutive transcription failures, maintained by the Wyoming handler
         # to make persistent breakage visible despite empty-transcript replies.
         self.failure_streak = 0
+        # Tokens generated during the current transcription; reset per request
+        # and used only for the per-stage timing log.
+        self._gen_tokens = 0
 
     def resolve_language(self, language: Optional[str]) -> str:
         """Resolve a requested language or fall back to the configured default."""
@@ -497,6 +500,7 @@ class CohereTranscriber:
 
         # Async transports call this via worker threads; serialize all torch
         # work (VAD, generate, ECAPA) and block model swaps mid-transcription.
+        lock_wait_start = time.perf_counter()
         with self._inference_lock:
             return self._transcribe_pcm_locked(
                 audio_data,
@@ -504,6 +508,7 @@ class CohereTranscriber:
                 resolved_language=resolved_language,
                 duration_s=duration_s,
                 temperature=temperature,
+                lock_wait_s=time.perf_counter() - lock_wait_start,
             )
 
     def _transcribe_pcm_locked(
@@ -514,8 +519,11 @@ class CohereTranscriber:
         resolved_language: str,
         duration_s: float,
         temperature: float,
+        lock_wait_s: float = 0.0,
     ) -> TranscriptionResult:
         text_mode = self.settings_store.load().speaker_text_mode
+        stages: dict[str, float] = {"lock_wait": lock_wait_s}
+        stage_start = time.perf_counter()
 
         if is_effectively_silent(audio_data):
             LOGGER.info("No speech detected above silence threshold; returning empty transcription")
@@ -527,6 +535,8 @@ class CohereTranscriber:
                 text_mode=text_mode,
             )
 
+        stages["silence"] = time.perf_counter() - stage_start
+        stage_start = time.perf_counter()
         vad_decision = self.vad_detector.detect_speech(audio_data, sample_rate=sample_rate)
         if not vad_decision.has_speech:
             LOGGER.info(
@@ -547,6 +557,7 @@ class CohereTranscriber:
                 text_mode=text_mode,
             )
 
+        stages["vad"] = time.perf_counter() - stage_start
         start_time = time.time()
 
         # Only the speech span (plus padding) is sent to generation; segment
@@ -565,6 +576,8 @@ class CohereTranscriber:
             )
         crop_offset = crop_start / sample_rate
 
+        self._gen_tokens = 0
+        stage_start = time.perf_counter()
         windows: list[list[dict]] = []
         for chunk, offset in chunk_audio(audio_data[crop_start:crop_end], sample_rate):
             windows.extend(
@@ -572,25 +585,34 @@ class CohereTranscriber:
                     chunk, crop_offset + offset, sample_rate, resolved_language, temperature
                 )
             )
+        stages["generate"] = time.perf_counter() - stage_start
+
+        stage_start = time.perf_counter()
         segments, merge_embeddings = self._merge_diarized_windows(
             windows, audio_data, sample_rate
         )
+        stages["merge"] = time.perf_counter() - stage_start
 
+        stage_start = time.perf_counter()
         speaker_embeddings = self._identify_speakers(
             segments, audio_data, sample_rate, merge_embeddings
         )
         dominant_name, dominant_score = self._dominant_speaker(segments)
+        stages["speaker_id"] = time.perf_counter() - stage_start
         text = render_speaker_text(segments, mode=text_mode)
 
         speaker_role = None
         utterance_id = None
+        stage_start = time.perf_counter()
         if dominant_name and self.speaker_registry is not None:
             speaker_role = read_role(self.speaker_registry.enrollment_dir, dominant_name)
         elif text.strip():
             utterance_id = self._save_pending_utterance(
                 segments, audio_data, sample_rate, text, speaker_embeddings
             )
+        stages["pending"] = time.perf_counter() - stage_start
 
+        stage_start = time.perf_counter()
         if self.recognition_log is not None and text.strip():
             self.recognition_log.append(
                 text=text,
@@ -601,6 +623,7 @@ class CohereTranscriber:
                 role=speaker_role,
                 utterance_id=utterance_id,
             )
+        stages["history"] = time.perf_counter() - stage_start
 
         elapsed = time.time() - start_time
         rtfx = duration_s / elapsed if elapsed > 0 else 0
@@ -613,6 +636,20 @@ class CohereTranscriber:
             resolved_language,
             speaker_count,
             self.backend,
+        )
+        LOGGER.info(
+            "STT stages ms: lock_wait=%.0f silence=%.0f vad=%.0f generate=%.0f "
+            "(passes=%d tokens=%d) merge=%.0f speaker_id=%.0f pending=%.0f history=%.0f",
+            stages["lock_wait"] * 1000,
+            stages["silence"] * 1000,
+            stages["vad"] * 1000,
+            stages["generate"] * 1000,
+            len(windows),
+            self._gen_tokens,
+            stages["merge"] * 1000,
+            stages["speaker_id"] * 1000,
+            stages["pending"] * 1000,
+            stages["history"] * 1000,
         )
 
         return TranscriptionResult(
@@ -763,6 +800,7 @@ class CohereTranscriber:
             outputs = self.model.generate(**model_inputs, **generate_kwargs)
 
         generated_tokens = outputs[0].shape[-1] - model_inputs["decoder_input_ids"].shape[-1]
+        self._gen_tokens += generated_tokens
         end_token_id = self._resolve_prompt_token("<|endoftext|>")
         if end_token_id is None:
             end_token_id = self.processor.tokenizer.eos_token_id

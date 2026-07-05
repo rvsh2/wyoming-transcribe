@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -88,8 +89,13 @@ class CohereWyomingEventHandler(AsyncEventHandler):
             await self.write_event(Transcript(text="", language=self.requested_language).event())
             return
 
+        finalize_start = time.perf_counter()
         pcm_audio = b"".join(self.audio_chunks)
         self.audio_chunks.clear()
+        bytes_per_second = (
+            self.audio_state.sample_rate * self.audio_state.width * self.audio_state.channels
+        )
+        audio_seconds = len(pcm_audio) / bytes_per_second if bytes_per_second else 0.0
 
         text = ""
         language = self.requested_language
@@ -144,3 +150,8 @@ class CohereWyomingEventHandler(AsyncEventHandler):
         event = Transcript(text=text, language=language).event()
         event.data.update(extra_data)
         await self.write_event(event)
+        LOGGER.info(
+            "AudioStop -> Transcript in %.0f ms (audio %.1fs)",
+            (time.perf_counter() - finalize_start) * 1000,
+            audio_seconds,
+        )

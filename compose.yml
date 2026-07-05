@@ -42,7 +42,9 @@ services:
       - VAD_SPEECH_PAD_MS=50
       - VAD_MIN_TOTAL_SPEECH_MS=70
       - VAD_MIN_MAX_SEGMENT_MS=45
-      - VAD_MIN_SPEECH_RMS=0.014
+      # 0.014 silently rejected real far-field speech (quiet command rms 0.013
+      # vs near 0.06); the Jabra noise floor is ~0.0001, so 0.007 stays safe.
+      - VAD_MIN_SPEECH_RMS=0.007
       - VAD_MIN_SPEECH_TO_NOISE_RATIO=2.6
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8580/health"]
