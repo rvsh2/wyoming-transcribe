@@ -25,7 +25,7 @@ from typing import Optional
 import numpy as np
 
 
-LOGGER = logging.getLogger("cohere-wyoming.speaker_id")
+LOGGER = logging.getLogger("transcribe-wyoming.speaker_id")
 
 DEFAULT_MODEL = "speechbrain/spkrec-ecapa-voxceleb"
 DEFAULT_THRESHOLD = 0.35

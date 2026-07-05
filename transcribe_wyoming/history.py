@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 
-LOGGER = logging.getLogger("cohere-wyoming.history")
+LOGGER = logging.getLogger("transcribe-wyoming.history")
 
 HISTORY_FILENAME = ".history.jsonl"
 DEFAULT_MAX_ENTRIES = 200

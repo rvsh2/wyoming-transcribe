@@ -2,7 +2,7 @@
   "config": {
     "step": {
       "user": {
-        "title": "Serwer Cohere-Transcribe-Diarize",
+        "title": "Serwer Wyoming Transcribe",
         "description": "Wskaż API zarządzania (domyślnie port 8580). Musi być osiągalne tylko z Home Assistant — panel boczny rozmawia z nim przez uwierzytelnione proxy, przeglądarka nigdy nie łączy się z serwerem bezpośrednio.",
         "data": {
           "host": "Host (adres hosta Dockera, osiągalny z HA)",

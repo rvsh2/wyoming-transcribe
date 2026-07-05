@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cohere_wyoming.settings import (
+from transcribe_wyoming.settings import (
     DEFAULT_SPEAKER_TEXT_MODE,
     SPEAKER_TEXT_MODES,
     SettingsStore,

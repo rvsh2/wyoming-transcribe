@@ -1,12 +1,14 @@
-"""Cohere transcription backend independent from HTTP/Wyoming transport."""
+"""Transcription backends (Cohere Transcribe diarize, whisper.cpp) independent from transport."""
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 import re
 import threading
 import time
+import wave
 from dataclasses import asdict, dataclass, field
 from typing import Optional
 
@@ -23,7 +25,7 @@ from .speaker_id import SpeakerRegistry
 from .vad import SileroVoiceActivityDetector, VadConfig
 
 
-LOGGER = logging.getLogger("cohere-wyoming.transcriber")
+LOGGER = logging.getLogger("transcribe-wyoming.transcriber")
 
 # Diarize decoder prompt. The processor still needs language=, but its own
 # decoder_input_ids are overridden with this sequence so the model emits speaker
@@ -62,8 +64,11 @@ MIN_SPLIT_SECONDS = 8
 # Override with the SPEAKER_CHAIN_THRESHOLD environment variable.
 DEFAULT_CHAIN_THRESHOLD = 0.40
 
-# Prefix used when rendering anonymous diarized speakers into a single transcript.
-SPEAKER_LABEL = "Mówca"
+# Prefix used when rendering anonymous diarized speakers into a single
+# transcript. Localizable: this literal ends up in the transcript text that
+# downstream consumers (e.g. an LLM) see, so deployments set it to match the
+# spoken language (SPEAKER_LABEL=Mówca for Polish).
+SPEAKER_LABEL = os.environ.get("SPEAKER_LABEL", "Speaker")
 
 _SEGMENT_RE = re.compile(
     r"<\|spltoken(\d+)\|>\s*<\|t:([0-9]+(?:\.[0-9]+)?)\|>(.*?)"
@@ -286,8 +291,18 @@ class TranscriptionResult:
         return asdict(self)
 
 
-class CohereTranscriber:
-    """Lazy-loading wrapper around Cohere Transcribe."""
+class SpeechTranscriber:
+    """Lazy-loading wrapper around the transcription backends.
+
+    Two backends share the surrounding pipeline (VAD crop, ECAPA speaker
+    identification, pending-voice enrollment, recognition history):
+
+    - ``cohere`` (default): local ``syvai/cohere-transcribe-diarize`` with
+      multi-speaker diarization — suited to dictation/meeting transcription.
+    - ``whispercpp``: a whisper.cpp server reached over HTTP — no diarization
+      (the whole utterance is treated as one speaker), markedly more robust
+      on short/degraded voice commands.
+    """
 
     def __init__(
         self,
@@ -299,11 +314,17 @@ class CohereTranscriber:
         speaker_registry: Optional[SpeakerRegistry] = None,
         settings_store: Optional[SettingsStore] = None,
         pending_store: Optional[PendingStore] = None,
+        stt_backend: Optional[str] = None,
+        whispercpp_url: Optional[str] = None,
     ) -> None:
         self.model_name = model_name
         self.default_language = self.resolve_language(default_language)
         self.prefer_device = prefer_device
-        self.backend = "native"
+        self.stt_backend = (stt_backend or os.environ.get("STT_BACKEND", "cohere")).lower()
+        self.whispercpp_url = (
+            whispercpp_url or os.environ.get("WHISPERCPP_URL", "http://whispercpp:4050")
+        ).rstrip("/")
+        self.backend = "whispercpp" if self.stt_backend == "whispercpp" else "native"
         self.model = None
         self.processor = None
         self.device = None
@@ -416,6 +437,23 @@ class CohereTranscriber:
 
     def load(self, model_name: Optional[str] = None) -> None:
         """Load the model and only swap instance state after success."""
+        if self.stt_backend == "whispercpp":
+            # No local weights: transcription happens in the whisper.cpp
+            # server. Probe it so a dead/unreachable server fails loudly at
+            # startup instead of as per-request empty transcripts.
+            LOGGER.info("Backend whispercpp: using server at %s", self.whispercpp_url)
+            try:
+                import requests
+
+                requests.get(self.whispercpp_url + "/", timeout=5)
+                LOGGER.info("whisper.cpp server is reachable")
+            except Exception as error:
+                LOGGER.warning(
+                    "whisper.cpp server not reachable yet (%s); requests will retry",
+                    error,
+                )
+            return
+
         if model_name:
             self.model_name = model_name
 
@@ -466,7 +504,38 @@ class CohereTranscriber:
         LOGGER.info("Model loaded in %.1fs using backend=%s", elapsed, self.backend)
 
     def is_loaded(self) -> bool:
+        if self.stt_backend == "whispercpp":
+            return True
         return self.model is not None and self.processor is not None
+
+    def _whispercpp_transcribe(
+        self, audio_data: np.ndarray, sample_rate: int, language: str
+    ) -> str:
+        """Transcribe one clip via the whisper.cpp server /inference endpoint."""
+        import requests
+
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(sample_rate)
+            wav_file.writeframes(
+                np.clip(audio_data * 32767.0, -32768, 32767).astype(np.int16).tobytes()
+            )
+        buffer.seek(0)
+
+        response = requests.post(
+            self.whispercpp_url + "/inference",
+            files={"file": ("audio.wav", buffer, "audio/wav")},
+            data={
+                "language": language,
+                "response_format": "json",
+                "temperature": "0.0",
+            },
+            timeout=60,
+        )
+        response.raise_for_status()
+        return str(response.json().get("text", "")).strip()
 
     def health_payload(self) -> dict:
         return {
@@ -578,20 +647,43 @@ class CohereTranscriber:
 
         self._gen_tokens = 0
         stage_start = time.perf_counter()
-        windows: list[list[dict]] = []
-        for chunk, offset in chunk_audio(audio_data[crop_start:crop_end], sample_rate):
-            windows.extend(
-                self._transcribe_window(
-                    chunk, crop_offset + offset, sample_rate, resolved_language, temperature
-                )
+        if self.stt_backend == "whispercpp":
+            # Single-pass, no diarization: the whole speech span is one
+            # segment/speaker; ECAPA identification below still runs on it.
+            text_raw = self._whispercpp_transcribe(
+                audio_data[crop_start:crop_end], sample_rate, resolved_language
             )
-        stages["generate"] = time.perf_counter() - stage_start
+            windows = []
+            segments = (
+                [
+                    {
+                        "speaker": 0,
+                        "start": crop_offset,
+                        "end": crop_end / sample_rate,
+                        "text": text_raw,
+                    }
+                ]
+                if text_raw
+                else []
+            )
+            merge_embeddings: dict[int, np.ndarray] = {}
+            stages["generate"] = time.perf_counter() - stage_start
+            stages["merge"] = 0.0
+        else:
+            windows = []
+            for chunk, offset in chunk_audio(audio_data[crop_start:crop_end], sample_rate):
+                windows.extend(
+                    self._transcribe_window(
+                        chunk, crop_offset + offset, sample_rate, resolved_language, temperature
+                    )
+                )
+            stages["generate"] = time.perf_counter() - stage_start
 
-        stage_start = time.perf_counter()
-        segments, merge_embeddings = self._merge_diarized_windows(
-            windows, audio_data, sample_rate
-        )
-        stages["merge"] = time.perf_counter() - stage_start
+            stage_start = time.perf_counter()
+            segments, merge_embeddings = self._merge_diarized_windows(
+                windows, audio_data, sample_rate
+            )
+            stages["merge"] = time.perf_counter() - stage_start
 
         stage_start = time.perf_counter()
         speaker_embeddings = self._identify_speakers(

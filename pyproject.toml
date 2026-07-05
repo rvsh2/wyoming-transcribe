@@ -1,7 +1,7 @@
 [project]
 name = "wyoming-transcribe"
 version = "0.1.0"
-description = "Wyoming protocol server and HTTP debug API for Cohere Transcribe"
+description = "Wyoming protocol STT server with speaker identification (Cohere Transcribe / whisper.cpp backends)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -23,14 +23,14 @@ dependencies = [
 ]
 
 [project.scripts]
-cohere-wyoming = "cohere_wyoming.__main__:main"
+transcribe-wyoming = "transcribe_wyoming.__main__:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["cohere_wyoming"]
+packages = ["transcribe_wyoming"]
 
 [tool.setuptools.package-data]
-cohere_wyoming = ["templates/*.html"]
+transcribe_wyoming = ["templates/*.html"]

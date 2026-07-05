@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Cohere Transcribe HTTP debug server backed by the shared Cohere runtime.
+Wyoming Transcribe HTTP management server backed by the shared transcription runtime.
 """
 
 from __future__ import annotations
@@ -30,18 +30,18 @@ from fastapi.responses import (
     Response,
 )
 
-from cohere_wyoming.audio import read_audio_to_numpy
-from cohere_wyoming.enrollment import SPEAKER_ROLES, EnrollmentError, EnrollmentStore
-from cohere_wyoming.history import RecognitionLog
-from cohere_wyoming.pending import PendingError, PendingStore
-from cohere_wyoming.transcriber import (
-    CohereTranscriber,
+from transcribe_wyoming.audio import read_audio_to_numpy
+from transcribe_wyoming.enrollment import SPEAKER_ROLES, EnrollmentError, EnrollmentStore
+from transcribe_wyoming.history import RecognitionLog
+from transcribe_wyoming.pending import PendingError, PendingStore
+from transcribe_wyoming.transcriber import (
+    SpeechTranscriber,
     SPEAKER_LABEL,
     SUPPORTED_LANGUAGES,
 )
-from cohere_wyoming.settings import SPEAKER_TEXT_MODES
-from cohere_wyoming.speaker_id import SpeakerRegistry
-from cohere_wyoming.vad import VadConfig
+from transcribe_wyoming.settings import SPEAKER_TEXT_MODES
+from transcribe_wyoming.speaker_id import SpeakerRegistry
+from transcribe_wyoming.vad import VadConfig
 
 
 logging.basicConfig(
@@ -49,13 +49,13 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-logger = logging.getLogger("cohere-transcribe-server")
+logger = logging.getLogger("wyoming-transcribe-server")
 
-service = CohereTranscriber(
+service = SpeechTranscriber(
     vad_config=VadConfig.from_env(),
     speaker_registry=SpeakerRegistry.from_env(),
 )
-INDEX_TEMPLATE_PATH = Path(__file__).resolve().parent / "cohere_wyoming" / "templates" / "index.html"
+INDEX_TEMPLATE_PATH = Path(__file__).resolve().parent / "transcribe_wyoming" / "templates" / "index.html"
 IGNORED_WHISPER_PARAMS = ("temperature_inc", "prompt", "encode", "no_timestamps")
 
 
@@ -324,7 +324,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Cohere Transcribe Server",
+    title="Wyoming Transcribe Server",
     description="whisper.cpp-compatible API powered by syvai/cohere-transcribe-diarize",
     version="1.0.0",
     lifespan=lifespan,
@@ -776,7 +776,7 @@ async def delete_speaker_sample(name: str, sample_id: str):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Cohere Transcribe Server - whisper.cpp compatible API",
+        description="Wyoming Transcribe Server - whisper.cpp compatible API",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Hostname/IP address for the server")

@@ -18,7 +18,7 @@ python3 server.py --host 0.0.0.0 --port "${UI_PORT}" --no-load-model \
 UI_PID=$!
 
 echo "Starting Wyoming ASR server"
-python3 -m cohere_wyoming "$@" &
+python3 -m transcribe_wyoming "$@" &
 WYOMING_PID=$!
 
 stop_children() {

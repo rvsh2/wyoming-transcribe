@@ -1,9 +1,9 @@
-/* Cohere-Transcribe-Diarize — Home Assistant custom panel.
+/* Wyoming Transcribe — Home Assistant custom panel.
  *
  * The full management UI (speakers, pending voices, recognition log,
  * settings, backup) rendered inside the HA frontend. All API calls go
  * through the integration's authenticated proxy
- * (/api/cohere_transcribe_diarize/proxy/...), so the API token never reaches
+ * (/api/wyoming_transcribe/proxy/...), so the API token never reaches
  * the browser and port 8580 only needs to be reachable from the HA host.
  *
  * This panel is the primary UI; the server-side page on port 8580 stays
@@ -73,7 +73,7 @@ const STYLES = `
   .recording-live { color: #ffb4be; font-weight: 700; }
 `;
 
-class CohereTranscribeDiarizePanel extends HTMLElement {
+class WyomingTranscribePanel extends HTMLElement {
   constructor() {
     super();
     this._hass = null;
@@ -104,7 +104,7 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
 
   async _api(path, options = {}) {
     const response = await this._hass.fetchWithAuth(
-      `/api/cohere_transcribe_diarize/proxy/${path}`,
+      `/api/wyoming_transcribe/proxy/${path}`,
       options
     );
     let payload = {};
@@ -117,7 +117,7 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
 
   async _apiBlob(path) {
     const response = await this._hass.fetchWithAuth(
-      `/api/cohere_transcribe_diarize/proxy/${path}`
+      `/api/wyoming_transcribe/proxy/${path}`
     );
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return response.blob();
@@ -131,74 +131,74 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
     root.innerHTML = `
       <style>${STYLES}</style>
       <div class="container">
-        <h1>Cohere-Transcribe-Diarize</h1>
+        <h1>Wyoming Transcribe</h1>
 
         <div class="card">
-          <h2>Status serwera</h2>
-          <div id="server-status" class="hint">Łączenie...</div>
+          <h2>Server Status</h2>
+          <div id="server-status" class="hint">Connecting...</div>
         </div>
 
         <div class="card">
-          <h2>Mówcy — rozpoznawanie głosu</h2>
-          <p class="hint">Zdefiniuj osoby i dodaj próbki głosu (zalecane 10–30 s czystej mowy).
-            Najprościej jednak przypisywać prawdziwe wypowiedzi z sekcji „Nierozpoznane głosy” poniżej.</p>
+          <h2>Speakers — Voice Recognition</h2>
+          <p class="hint">Define people and add voice samples (10–30 s of clean speech recommended).
+            The easiest way, though, is to assign real utterances from the "Unrecognized Voices" section below.</p>
           <div class="speaker-add">
-            <input id="new-speaker-name" type="text" placeholder="Imię nowej osoby" autocomplete="off">
-            <button id="add-speaker" type="button">Dodaj osobę</button>
+            <input id="new-speaker-name" type="text" placeholder="New person's name" autocomplete="off">
+            <button id="add-speaker" type="button">Add person</button>
           </div>
           <div id="mic-hint" class="hint" style="display:none; padding: 0.5rem 0.75rem; border: 1px solid #d9822b; border-radius: 8px; margin-bottom: 0.5rem;">
-            Nagrywanie mikrofonem wymaga dostępu do Home Assistant po <strong>HTTPS</strong>
-            (tak samo jak mikrofon w Assist). Przy zwykłym http możesz wgrywać pliki
-            albo przypisywać wypowiedzi z sekcji „Nierozpoznane głosy”.
+            Microphone recording requires accessing Home Assistant over <strong>HTTPS</strong>
+            (same as the Assist microphone). Over plain http you can upload files
+            or assign utterances from the "Unrecognized Voices" section.
           </div>
           <div id="speakers-status" class="hint"></div>
           <div id="speakers-list"></div>
         </div>
 
         <div class="card">
-          <h2>Nierozpoznane głosy</h2>
-          <p class="hint">Wypowiedzi, których głos nie pasował do żadnej osoby (jedna grupa = ten
-            sam głos). Odsłuchaj i przypisz — domyślnie przypisywana jest cała grupa. Te same
-            nagrania może przypisywać usługa <code>cohere_transcribe_diarize.claim_utterance</code>.</p>
+          <h2>Unrecognized Voices</h2>
+          <p class="hint">Utterances whose voice did not match any known person (one group = the
+            same voice). Listen and assign — by default the whole group is assigned. The same
+            recordings can be assigned by the <code>wyoming_transcribe.claim_utterance</code> service.</p>
           <div id="pending-status" class="hint"></div>
           <div id="pending-list"></div>
         </div>
 
         <div class="card">
-          <h2>Dziennik rozpoznań</h2>
-          <p class="hint">Ostatnie transkrypcje z decyzją identyfikacji (kto + pewność).</p>
+          <h2>Recognition Log</h2>
+          <p class="hint">Recent transcriptions with the identification decision (who + confidence).</p>
           <div id="history-status" class="hint"></div>
           <div id="history-list"></div>
           <div class="button-row form-row">
-            <button id="history-refresh" class="button-secondary btn-small" type="button">Odśwież</button>
+            <button id="history-refresh" class="button-secondary btn-small" type="button">Refresh</button>
           </div>
         </div>
 
         <div class="card">
-          <h2>Ustawienia</h2>
+          <h2>Settings</h2>
           <div class="form-row">
-            <label for="speaker-text-mode">Przekazywanie tożsamości mówcy</label>
+            <label for="speaker-text-mode">Speaker identity delivery</label>
             <select id="speaker-text-mode">
-              <option value="prefix">Tylko prefiks w tekście („Krzysztof: …”)</option>
-              <option value="field">Tylko pole „speaker” w evencie Wyoming (czysty tekst)</option>
-              <option value="both">Prefiks w tekście i pole „speaker”</option>
+              <option value="prefix">Text prefix only ("Krzysztof: …")</option>
+              <option value="field">Only the "speaker" field in the Wyoming event (plain text)</option>
+              <option value="both">Text prefix and the "speaker" field</option>
             </select>
-            <div class="hint">Zmiana obowiązuje od następnej transkrypcji (bez restartu).</div>
+            <div class="hint">Changes take effect from the next transcription (no restart needed).</div>
             <div class="button-row">
-              <button id="save-settings" type="button">Zapisz ustawienia</button>
+              <button id="save-settings" type="button">Save settings</button>
             </div>
             <div id="settings-status" class="hint"></div>
           </div>
           <div class="form-row">
-            <label>Kopia zapasowa głosów</label>
+            <label>Voice Backup</label>
             <div class="button-row">
-              <button id="export-backup" class="button-secondary" type="button">Pobierz kopię (tar.gz)</button>
+              <button id="export-backup" class="button-secondary" type="button">Download backup (tar.gz)</button>
               <label class="button-secondary upload-label" style="border-radius:999px;padding:0.7rem 1.2rem;font-weight:700;cursor:pointer;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.12);">
-                Przywróć z kopii<input id="import-backup" type="file" accept=".tar.gz,.tgz,application/gzip">
+                Restore from backup<input id="import-backup" type="file" accept=".tar.gz,.tgz,application/gzip">
               </label>
             </div>
-            <div class="hint">Kopia obejmuje osoby, próbki, role i ustawienia
-              (bez bufora nierozpoznanych i dziennika).</div>
+            <div class="hint">The backup includes people, samples, roles and settings
+              (excluding the unrecognized-voice buffer and the log).</div>
             <div id="backup-status" class="hint"></div>
           </div>
         </div>
@@ -236,7 +236,7 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
     const button = document.createElement("button");
     button.className = "button-secondary btn-small";
     button.type = "button";
-    button.textContent = "▶ Odtwórz";
+    button.textContent = "▶ Play";
     button.addEventListener("click", async () => {
       button.disabled = true;
       try {
@@ -248,7 +248,7 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
         wrapper.replaceChildren(audio);
       } catch (error) {
         button.disabled = false;
-        button.textContent = `Błąd (${error.message})`;
+        button.textContent = `Error (${error.message})`;
       }
     });
     wrapper.appendChild(button);
@@ -262,17 +262,17 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
     try {
       const health = await this._api("health");
       const ready = health.ready
-        ? '<span class="status-ok">● gotowy</span>'
-        : '<span class="status-warn">● bez modelu ASR (tryb zarządzania)</span>';
+        ? '<span class="status-ok">● ready</span>'
+        : '<span class="status-warn">● no ASR model (management mode)</span>';
       const speakerId = health.speaker_id || {};
       target.innerHTML =
         `${ready} · model <code>${this._escape(health.model)}</code>` +
-        ` · rozpoznawanie mówców: ${speakerId.enabled ? "włączone" : "wyłączone"}` +
+        ` · speaker recognition: ${speakerId.enabled ? "enabled" : "disabled"}` +
         (speakerId.speakers && speakerId.speakers.length
           ? ` (${this._escape(speakerId.speakers.join(", "))})`
           : "");
     } catch (error) {
-      target.innerHTML = `<span class="status-warn">Brak połączenia: ${this._escape(error.message)}</span>`;
+      target.innerHTML = `<span class="status-warn">No connection: ${this._escape(error.message)}</span>`;
     }
   }
 
@@ -291,22 +291,22 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
       const speakers = data.speakers || [];
       this._speakerNames = speakers.map((s) => s.name);
       const status = data.speaker_id || {};
-      const enrolled = (status.enrolled || []).join(", ") || "brak";
+      const enrolled = (status.enrolled || []).join(", ") || "none";
       this._setSpeakersStatus(
         status.enabled
-          ? `Rozpoznawanie włączone (próg ${status.threshold}). Osoby z próbkami: ${enrolled}.`
-          : `Rozpoznawanie wyłączone (SPEAKER_ID_ENABLED=false). Osoby z próbkami: ${enrolled}.`,
+          ? `Recognition enabled (threshold ${status.threshold}). People with samples: ${enrolled}.`
+          : `Recognition disabled (SPEAKER_ID_ENABLED=false). People with samples: ${enrolled}.`,
         false
       );
       const list = this._el("speakers-list");
       list.innerHTML = "";
       if (!speakers.length) {
-        list.innerHTML = '<div class="empty-hint">Brak zdefiniowanych osób. Dodaj pierwszą powyżej.</div>';
+        list.innerHTML = '<div class="empty-hint">No people defined yet. Add the first one above.</div>';
         return;
       }
       for (const speaker of speakers) list.appendChild(this._speakerCard(speaker));
     } catch (error) {
-      this._setSpeakersStatus(`Błąd wczytywania: ${error.message}`, true);
+      this._setSpeakersStatus(`Failed to load: ${error.message}`, true);
     }
   }
 
@@ -318,12 +318,12 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
     head.className = "speaker-head";
     const totalSeconds = speaker.samples.reduce((sum, s) => sum + (s.seconds || 0), 0);
     const adapted = speaker.adapted
-      ? ` · adaptacja: ${speaker.adapted} rozpoznań`
+      ? ` · adaptation: ${speaker.adapted} recognitions`
       : "";
     const title = document.createElement("div");
     title.innerHTML =
       `<span class="speaker-name">${this._escape(speaker.name)}</span>` +
-      `<div class="speaker-meta">${speaker.samples.length} próbek · ${totalSeconds.toFixed(1)} s łącznie${adapted}</div>`;
+      `<div class="speaker-meta">${speaker.samples.length} samples · ${totalSeconds.toFixed(1)} s total${adapted}</div>`;
     head.appendChild(title);
 
     const actions = document.createElement("div");
@@ -334,7 +334,7 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
     for (const role of this._roles) {
       const option = document.createElement("option");
       option.value = role;
-      option.textContent = `rola: ${role}`;
+      option.textContent = `role: ${role}`;
       roleSelect.appendChild(option);
     }
     roleSelect.value = speaker.role || "user";
@@ -343,9 +343,9 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
       form.append("role", roleSelect.value);
       try {
         await this._api(`speakers/${encodeURIComponent(speaker.name)}/role`, { method: "POST", body: form });
-        this._setSpeakersStatus(`Rola „${speaker.name}” ustawiona na ${roleSelect.value}.`, false);
+        this._setSpeakersStatus(`Role for "${speaker.name}" set to ${roleSelect.value}.`, false);
       } catch (error) {
-        this._setSpeakersStatus(`Nie udało się zmienić roli: ${error.message}`, true);
+        this._setSpeakersStatus(`Failed to change role: ${error.message}`, true);
       }
     });
     actions.appendChild(roleSelect);
@@ -354,19 +354,19 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
     recordButton.className = "button-secondary btn-small";
     recordButton.type = "button";
     if (window.isSecureContext && navigator.mediaDevices) {
-      recordButton.textContent = "Nagraj";
+      recordButton.textContent = "Record";
       recordButton.addEventListener("click", () => this._toggleRecording(speaker.name, recordButton));
     } else {
-      recordButton.textContent = "Nagraj (wymaga HTTPS)";
+      recordButton.textContent = "Record (requires HTTPS)";
       recordButton.disabled = true;
-      recordButton.title = "Mikrofon działa tylko przy dostępie do HA po HTTPS. Użyj wgrywania pliku lub sekcji „Nierozpoznane głosy”.";
+      recordButton.title = "The microphone only works when HA is accessed over HTTPS. Use file upload or the \"Unrecognized Voices\" section.";
     }
     actions.appendChild(recordButton);
 
     const uploadLabel = document.createElement("label");
     uploadLabel.className = "button-secondary btn-small upload-label";
     uploadLabel.style.cssText = "border-radius:999px;font-weight:700;cursor:pointer;padding:0.45rem 0.85rem;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.12);";
-    uploadLabel.textContent = "Wgraj plik";
+    uploadLabel.textContent = "Upload file";
     const uploadInput = document.createElement("input");
     uploadInput.type = "file";
     uploadInput.accept = "audio/*";
@@ -379,14 +379,14 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
     const deleteButton = document.createElement("button");
     deleteButton.className = "button-danger btn-small";
     deleteButton.type = "button";
-    deleteButton.textContent = "Usuń osobę";
+    deleteButton.textContent = "Delete person";
     deleteButton.addEventListener("click", async () => {
-      if (!confirm(`Usunąć osobę "${speaker.name}" wraz ze wszystkimi próbkami?`)) return;
+      if (!confirm(`Delete person "${speaker.name}" along with all their samples?`)) return;
       try {
         await this._api(`speakers/${encodeURIComponent(speaker.name)}`, { method: "DELETE" });
         await this._loadSpeakers();
       } catch (error) {
-        this._setSpeakersStatus(`Nie udało się usunąć: ${error.message}`, true);
+        this._setSpeakersStatus(`Failed to delete: ${error.message}`, true);
       }
     });
     actions.appendChild(deleteButton);
@@ -397,7 +397,7 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
     if (!speaker.samples.length) {
       const empty = document.createElement("div");
       empty.className = "empty-hint";
-      empty.textContent = "Brak próbek dla tej osoby.";
+      empty.textContent = "No samples for this person.";
       card.appendChild(empty);
     }
     for (const sample of speaker.samples) {
@@ -414,7 +414,7 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
       const del = document.createElement("button");
       del.className = "button-danger btn-small";
       del.type = "button";
-      del.textContent = "Usuń";
+      del.textContent = "Delete";
       del.addEventListener("click", async () => {
         try {
           await this._api(
@@ -423,7 +423,7 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
           );
           await this._loadSpeakers();
         } catch (error) {
-          this._setSpeakersStatus(`Nie udało się usunąć próbki: ${error.message}`, true);
+          this._setSpeakersStatus(`Failed to delete sample: ${error.message}`, true);
         }
       });
       row.appendChild(meta);
@@ -438,7 +438,7 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
     const input = this._el("new-speaker-name");
     const name = input.value.trim();
     if (!name) {
-      this._setSpeakersStatus("Podaj imię osoby.", true);
+      this._setSpeakersStatus("Enter a person's name.", true);
       return;
     }
     const form = new FormData();
@@ -448,20 +448,20 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
       input.value = "";
       await this._loadSpeakers();
     } catch (error) {
-      this._setSpeakersStatus(`Nie udało się dodać: ${error.message}`, true);
+      this._setSpeakersStatus(`Failed to add: ${error.message}`, true);
     }
   }
 
   async _uploadSample(name, file) {
     const form = new FormData();
     form.append("file", file);
-    this._setSpeakersStatus(`Wgrywanie próbki dla ${name}...`, false);
+    this._setSpeakersStatus(`Uploading sample for ${name}...`, false);
     try {
       await this._api(`speakers/${encodeURIComponent(name)}/samples`, { method: "POST", body: form });
-      this._setSpeakersStatus(`Dodano próbkę dla ${name}.`, false);
+      this._setSpeakersStatus(`Added sample for ${name}.`, false);
       await this._loadSpeakers();
     } catch (error) {
-      this._setSpeakersStatus(`Nie udało się wgrać próbki: ${error.message}`, true);
+      this._setSpeakersStatus(`Failed to upload sample: ${error.message}`, true);
     }
   }
 
@@ -498,19 +498,19 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
           ? new Blob(this._recorderChunks, { type: this._recorderChunks[0].type })
           : null;
         this._stopStream();
-        button.textContent = "Nagraj";
+        button.textContent = "Record";
         button.classList.remove("button-danger");
         if (blob) {
           this._uploadSample(name, new File([blob], "recording.webm", { type: blob.type }));
         }
       });
       this._recorder.start();
-      button.textContent = "Zatrzymaj";
+      button.textContent = "Stop";
       button.classList.add("button-danger");
-      this._setSpeakersStatus(`Nagrywanie dla ${name}... kliknij „Zatrzymaj”, by zapisać.`, false);
+      this._setSpeakersStatus(`Recording for ${name}... click "Stop" to save.`, false);
     } catch (error) {
       this._stopStream();
-      this._setSpeakersStatus(`Brak dostępu do mikrofonu: ${error.message}`, true);
+      this._setSpeakersStatus(`Microphone access failed: ${error.message}`, true);
     }
   }
 
@@ -522,7 +522,7 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
       const data = await this._api("pending");
       this._renderPending(data.clusters || []);
     } catch (error) {
-      status.textContent = `Błąd wczytywania: ${error.message}`;
+      status.textContent = `Failed to load: ${error.message}`;
     }
   }
 
@@ -532,8 +532,8 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
     list.innerHTML = "";
     const count = clusters.reduce((total, cluster) => total + cluster.clips.length, 0);
     status.textContent = count
-      ? `${count} nagrań w ${clusters.length} grupach (grupa = ten sam głos).`
-      : "Brak oczekujących nagrań — wszystkie głosy rozpoznane lub bufor pusty.";
+      ? `${count} recordings in ${clusters.length} groups (group = same voice).`
+      : "No pending recordings — all voices recognized or the buffer is empty.";
     for (const cluster of clusters) list.appendChild(this._pendingCluster(cluster));
   }
 
@@ -548,14 +548,14 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
     }
     const fresh = document.createElement("option");
     fresh.value = "__new__";
-    fresh.textContent = "+ nowa osoba…";
+    fresh.textContent = "+ new person…";
     select.appendChild(fresh);
     return select;
   }
 
   _resolveAssignTarget(select) {
     if (select.value === "__new__") {
-      const name = prompt("Imię nowej osoby:");
+      const name = prompt("New person's name:");
       return name && name.trim() ? name.trim() : null;
     }
     return select.value || null;
@@ -570,9 +570,9 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
         `speakers/${encodeURIComponent(name)}/samples/from-utterance/${encodeURIComponent(utteranceId)}`,
         { method: "POST", body: form }
       );
-      status.textContent = `Przypisano ${result.claimed.length} nagrań do „${name}”.`;
+      status.textContent = `Assigned ${result.claimed.length} recordings to "${name}".`;
     } catch (error) {
-      status.textContent = `Nie udało się przypisać: ${error.message}`;
+      status.textContent = `Failed to assign: ${error.message}`;
     }
     await this._loadPending();
     await this._loadSpeakers();
@@ -588,8 +588,8 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
     const title = document.createElement("div");
     const clipCount = cluster.clips.length;
     title.innerHTML =
-      `<span class="speaker-name">Nieznany głos</span>` +
-      `<div class="speaker-meta">${clipCount} ${clipCount === 1 ? "nagranie" : "nagrań"}</div>`;
+      `<span class="speaker-name">Unknown voice</span>` +
+      `<div class="speaker-meta">${clipCount} ${clipCount === 1 ? "recording" : "recordings"}</div>`;
     head.appendChild(title);
 
     const actions = document.createElement("div");
@@ -598,7 +598,7 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
     const assignAll = document.createElement("button");
     assignAll.className = "btn-small";
     assignAll.type = "button";
-    assignAll.textContent = "Przypisz grupę";
+    assignAll.textContent = "Assign group";
     assignAll.addEventListener("click", () => {
       const name = this._resolveAssignTarget(target);
       if (name) this._claim(name, cluster.clips[0].id, true);
@@ -615,14 +615,14 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
       const meta = document.createElement("span");
       meta.className = "sample-meta";
       const when = clip.created ? new Date(clip.created * 1000).toLocaleString() : "";
-      const text = clip.text ? ` · „${clip.text}”` : "";
+      const text = clip.text ? ` · "${clip.text}"` : "";
       meta.textContent = `${(clip.seconds || 0).toFixed(1)} s · ${when}${text}`;
       const spacer = document.createElement("div");
       spacer.className = "spacer";
       const assignOne = document.createElement("button");
       assignOne.className = "button-secondary btn-small";
       assignOne.type = "button";
-      assignOne.textContent = "Tylko to";
+      assignOne.textContent = "Only this one";
       assignOne.addEventListener("click", () => {
         const name = this._resolveAssignTarget(target);
         if (name) this._claim(name, clip.id, false);
@@ -630,12 +630,12 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
       const remove = document.createElement("button");
       remove.className = "button-danger btn-small";
       remove.type = "button";
-      remove.textContent = "Usuń";
+      remove.textContent = "Delete";
       remove.addEventListener("click", async () => {
         try {
           await this._api(`pending/${encodeURIComponent(clip.id)}`, { method: "DELETE" });
         } catch (error) {
-          this._el("pending-status").textContent = `Nie udało się usunąć: ${error.message}`;
+          this._el("pending-status").textContent = `Failed to delete: ${error.message}`;
         }
         await this._loadPending();
       });
@@ -656,7 +656,7 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
       const data = await this._api("history?limit=50");
       this._renderHistory(data.entries || []);
     } catch (error) {
-      status.textContent = `Błąd wczytywania: ${error.message}`;
+      status.textContent = `Failed to load: ${error.message}`;
     }
   }
 
@@ -665,25 +665,25 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
     const status = this._el("history-status");
     list.innerHTML = "";
     if (!entries.length) {
-      status.textContent = "Brak wpisów — dziennik wypełnia się z każdą transkrypcją.";
+      status.textContent = "No entries yet — the log fills up with each transcription.";
       return;
     }
     const recognized = entries.filter((e) => e.speaker).length;
     status.textContent =
-      `${entries.length} ostatnich transkrypcji · rozpoznane: ${recognized} · nieznane: ${entries.length - recognized}`;
+      `${entries.length} recent transcriptions · recognized: ${recognized} · unknown: ${entries.length - recognized}`;
     for (const entry of entries) {
       const row = document.createElement("div");
       row.className = "sample-row";
       const meta = document.createElement("span");
       meta.className = "sample-meta";
       const when = entry.ts ? new Date(entry.ts * 1000).toLocaleString() : "";
-      let who = "nieznany";
+      let who = "unknown";
       if (entry.speaker) {
         const score = entry.score != null ? ` (${entry.score.toFixed(2)})` : "";
         const role = entry.role ? ` · ${entry.role}` : "";
         who = `${entry.speaker}${score}${role}`;
       }
-      meta.textContent = `${when} · ${who} · „${entry.text || ""}”`;
+      meta.textContent = `${when} · ${who} · "${entry.text || ""}"`;
       const spacer = document.createElement("div");
       spacer.className = "spacer";
       row.appendChild(meta);
@@ -705,7 +705,7 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
       }
       this._el("settings-status").textContent = "";
     } catch (error) {
-      this._el("settings-status").textContent = `Błąd wczytywania ustawień: ${error.message}`;
+      this._el("settings-status").textContent = `Failed to load settings: ${error.message}`;
     }
   }
 
@@ -714,15 +714,15 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
     form.append("speaker_text_mode", this._el("speaker-text-mode").value);
     try {
       await this._api("settings", { method: "POST", body: form });
-      this._el("settings-status").textContent = "Zapisano — obowiązuje od następnej transkrypcji.";
+      this._el("settings-status").textContent = "Saved — takes effect from the next transcription.";
     } catch (error) {
-      this._el("settings-status").textContent = `Błąd zapisu: ${error.message}`;
+      this._el("settings-status").textContent = `Failed to save: ${error.message}`;
     }
   }
 
   async _exportBackup() {
     const status = this._el("backup-status");
-    status.textContent = "Przygotowywanie kopii...";
+    status.textContent = "Preparing backup...";
     try {
       const blob = await this._apiBlob("export");
       const link = document.createElement("a");
@@ -730,9 +730,9 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
       link.download = "speakers-backup.tar.gz";
       link.click();
       URL.revokeObjectURL(link.href);
-      status.textContent = "Kopia pobrana.";
+      status.textContent = "Backup downloaded.";
     } catch (error) {
-      status.textContent = `Błąd eksportu: ${error.message}`;
+      status.textContent = `Export failed: ${error.message}`;
     }
   }
 
@@ -740,7 +740,7 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
     const input = this._el("import-backup");
     const status = this._el("backup-status");
     if (!input.files.length) return;
-    if (!confirm("Przywrócić kopię? Istniejące pliki o tych samych nazwach zostaną nadpisane.")) {
+    if (!confirm("Restore backup? Existing files with the same names will be overwritten.")) {
       input.value = "";
       return;
     }
@@ -748,15 +748,15 @@ class CohereTranscribeDiarizePanel extends HTMLElement {
     form.append("file", input.files[0]);
     try {
       const result = await this._api("import", { method: "POST", body: form });
-      status.textContent = `Przywrócono ${result.files} plików.`;
+      status.textContent = `Restored ${result.files} files.`;
       await this._loadSpeakers();
       await this._loadPending();
       await this._loadHistory();
     } catch (error) {
-      status.textContent = `Błąd importu: ${error.message}`;
+      status.textContent = `Import failed: ${error.message}`;
     }
     input.value = "";
   }
 }
 
-customElements.define("cohere-transcribe-diarize-panel", CohereTranscribeDiarizePanel);
+customElements.define("wyoming-transcribe-panel", WyomingTranscribePanel);

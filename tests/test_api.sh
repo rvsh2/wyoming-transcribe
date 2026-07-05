@@ -18,7 +18,7 @@ else
 fi
 
 echo "============================================"
-echo "  Cohere Transcribe Server - API Tests"
+echo "  Wyoming Transcribe Server - API Tests"
 echo "============================================"
 echo ""
 echo "Server: ${SERVER}"

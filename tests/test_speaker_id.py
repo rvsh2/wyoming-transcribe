@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from cohere_wyoming.speaker_id import SpeakerMatch, SpeakerRegistry
+from transcribe_wyoming.speaker_id import SpeakerMatch, SpeakerRegistry
 
 
 def unit(vec) -> np.ndarray:

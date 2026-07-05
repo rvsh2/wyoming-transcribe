@@ -67,7 +67,7 @@ CI: GitHub Actions workflow running the full pytest suite (131 tests).
 - **Window-merge regression**: without the embedding backend (speaker ID
   disabled or embedding failure) the model's raw speaker indices are preserved
   across 30 s windows again — a single speaker is no longer shredded into
-  "Mówca 0/1/2".
+  "Speaker 0/1/2".
 - **Auth**: token comparison is byte-wise (non-ASCII input yielded 500 instead
   of 401); a non-ASCII `API_TOKEN` logs a loud warning at startup.
 - **Config flow**: the token check always runs — a blank token against a
@@ -276,12 +276,12 @@ CI: GitHub Actions workflow running the full pytest suite (131 tests).
 ### Speaker Diarization Engine
 
 - Switched the ASR model to `syvai/cohere-transcribe-diarize` (loads with `trust_remote_code=False`, `bfloat16` on GPU).
-- Transcripts now carry per-speaker prefixes (`Mówca 0:` / enrolled name), with timestamped segments exposed in `verbose_json`.
+- Transcripts now carry per-speaker prefixes (`Speaker 0:` / enrolled name), with timestamped segments exposed in `verbose_json`.
 - Diarize prompt is built from decoder tokens (`<|diarize|>`, `<|timestamp|>`); audio longer than 30 s is split into windows automatically.
 
 ### Speaker Identification (ECAPA-TDNN)
 
-- Added `cohere_wyoming/speaker_id.py`: per-person enrollment profiles, on-disk embedding cache, and per-segment identification.
+- Added `transcribe_wyoming/speaker_id.py`: per-person enrollment profiles, on-disk embedding cache, and per-segment identification.
 - Matching is per segment (not per model label), which corrects the model's occasional mislabeling; verified end-to-end on a clean multi-speaker English clip (matches 0.66–1.0).
 - Configurable via `SPEAKER_*` env vars; off by default.
 

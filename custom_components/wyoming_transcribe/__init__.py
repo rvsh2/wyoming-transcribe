@@ -1,4 +1,4 @@
-"""Cohere-Transcribe-Diarize integration.
+"""Wyoming Transcribe integration.
 
 Embeds the enrollment/management UI as a sidebar panel (iframe), polls the
 management API for status sensors, fires an event when a new unrecognized
@@ -47,7 +47,7 @@ REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15)
 # Uploads (voice samples, backup archives) can take longer than status calls.
 PROXY_TIMEOUT = aiohttp.ClientTimeout(total=120)
 
-PANEL_STATIC_PATH = "/cohere_transcribe_diarize_static"
+PANEL_STATIC_PATH = "/wyoming_transcribe_static"
 
 EVENT_NEW_PENDING = f"{DOMAIN}_new_pending"
 
@@ -99,7 +99,7 @@ def _first_runtime(hass: HomeAssistant) -> dict:
     single server by design (the panel has no server switcher yet)."""
     runtimes = hass.data.get(DOMAIN) or {}
     if not runtimes:
-        raise HomeAssistantError("No Cohere-Transcribe-Diarize server is configured")
+        raise HomeAssistantError("No Wyoming Transcribe server is configured")
     return next(iter(runtimes.values()))
 
 
@@ -112,22 +112,22 @@ def _runtime_for(hass: HomeAssistant, host: str | None) -> dict:
     """
     runtimes = hass.data.get(DOMAIN) or {}
     if not runtimes:
-        raise HomeAssistantError("No Cohere-Transcribe-Diarize server is configured")
+        raise HomeAssistantError("No Wyoming Transcribe server is configured")
     if host:
         for runtime in runtimes.values():
             if runtime.get("host") == host:
                 return runtime
-        raise HomeAssistantError(f"No Cohere-Transcribe-Diarize server configured for host '{host}'")
+        raise HomeAssistantError(f"No Wyoming Transcribe server configured for host '{host}'")
     if len(runtimes) > 1:
         hosts = ", ".join(sorted(r.get("host", "?") for r in runtimes.values()))
         raise HomeAssistantError(
-            f"Multiple Cohere-Transcribe-Diarize servers are configured ({hosts}); "
+            f"Multiple Wyoming Transcribe servers are configured ({hosts}); "
             "pass the 'host' field to select one"
         )
     return next(iter(runtimes.values()))
 
 
-class CohereTranscribeDiarizeProxyView(HomeAssistantView):
+class WyomingTranscribeProxyView(HomeAssistantView):
     """Authenticated proxy to the management API.
 
     The panel talks to this view with the user's HA credentials
@@ -136,8 +136,8 @@ class CohereTranscribeDiarizeProxyView(HomeAssistantView):
     to be reachable from the HA host.
     """
 
-    url = "/api/cohere_transcribe_diarize/proxy/{path:.+}"
-    name = "api:cohere_transcribe_diarize:proxy"
+    url = "/api/wyoming_transcribe/proxy/{path:.+}"
+    name = "api:wyoming_transcribe:proxy"
     requires_auth = True
 
     def __init__(self, hass: HomeAssistant) -> None:
@@ -173,7 +173,7 @@ class CohereTranscribeDiarizeProxyView(HomeAssistantView):
             raise
         except Exception as error:
             return web.json_response(
-                {"detail": f"Cohere-Transcribe-Diarize server unreachable: {error}"},
+                {"detail": f"Wyoming Transcribe server unreachable: {error}"},
                 status=502,
             )
 
@@ -200,7 +200,7 @@ async def _api_post(runtime: dict, path: str, fields: dict) -> dict:
         body = await response.text()
         if response.status >= 400:
             raise HomeAssistantError(
-                f"Cohere-Transcribe-Diarize API error {response.status} on {path}: {body}"
+                f"Wyoming Transcribe API error {response.status} on {path}: {body}"
             )
     await runtime["coordinator"].async_request_refresh()
     try:
@@ -422,7 +422,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 )
             ]
         )
-        hass.http.register_view(CohereTranscribeDiarizeProxyView(hass))
+        hass.http.register_view(WyomingTranscribeProxyView(hass))
         hass.data[f"{DOMAIN}_http_registered"] = True
 
     frontend.async_register_built_in_panel(
@@ -433,7 +433,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         frontend_url_path=PANEL_URL_PATH,
         config={
             "_panel_custom": {
-                "name": "cohere-transcribe-diarize-panel",
+                "name": "wyoming-transcribe-panel",
                 "module_url": f"{PANEL_STATIC_PATH}/panel.js",
                 "embed_iframe": False,
                 "trust_external": False,

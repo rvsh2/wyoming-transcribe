@@ -7,7 +7,7 @@ import unittest
 
 import numpy as np
 
-from cohere_wyoming.transcriber import (
+from transcribe_wyoming.transcriber import (
     chunk_audio,
     parse_diarized_output,
     render_speaker_text,
@@ -119,9 +119,9 @@ class RenderSpeakerTextTests(unittest.TestCase):
         text = render_speaker_text(parse_diarized_output(SPIKE_RAW))
         lines = text.split("\n")
         self.assertEqual(len(lines), 5)
-        self.assertTrue(lines[0].startswith("Mówca 0: Robimy"))
-        self.assertTrue(lines[1].startswith("Mówca 1: Yeah"))
-        self.assertTrue(lines[4].startswith("Mówca 0: If it does not work"))
+        self.assertTrue(lines[0].startswith("Speaker 0: Robimy"))
+        self.assertTrue(lines[1].startswith("Speaker 1: Yeah"))
+        self.assertTrue(lines[4].startswith("Speaker 0: If it does not work"))
 
     def test_merges_consecutive_same_speaker(self):
         segments = [
@@ -131,7 +131,7 @@ class RenderSpeakerTextTests(unittest.TestCase):
         ]
         self.assertEqual(
             render_speaker_text(segments),
-            "Mówca 0: Hello there. How are you?\nMówca 1: Fine.",
+            "Speaker 0: Hello there. How are you?\nSpeaker 1: Fine.",
         )
 
     def test_empty_segments_render_empty_string(self):
@@ -144,7 +144,7 @@ class RenderSpeakerTextTests(unittest.TestCase):
         ]
         self.assertEqual(
             render_speaker_text(segments),
-            "Krzysztof: Hi.\nMówca 1: Yo.",
+            "Krzysztof: Hi.\nSpeaker 1: Yo.",
         )
 
 

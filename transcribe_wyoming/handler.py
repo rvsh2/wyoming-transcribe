@@ -1,4 +1,4 @@
-"""Wyoming protocol handler for Cohere Transcribe."""
+"""Wyoming protocol handler for the transcription backends."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .audio import pcm16le_to_float32
-from .transcriber import CohereTranscriber
+from .transcriber import SpeechTranscriber
 from .wyoming_protocol import (
     AsyncEventHandler,
     AudioChunk,
@@ -21,7 +21,7 @@ from .wyoming_protocol import (
 )
 
 
-LOGGER = logging.getLogger("cohere-wyoming.handler")
+LOGGER = logging.getLogger("transcribe-wyoming.handler")
 
 
 @dataclass
@@ -31,10 +31,10 @@ class AudioState:
     channels: int = 1
 
 
-class CohereWyomingEventHandler(AsyncEventHandler):
+class TranscribeEventHandler(AsyncEventHandler):
     """Collect audio chunks and answer with one final transcript."""
 
-    def __init__(self, transcriber: CohereTranscriber, info_event: Event, *args, **kwargs):
+    def __init__(self, transcriber: SpeechTranscriber, info_event: Event, *args, **kwargs):
         if args or kwargs:
             super().__init__(*args, **kwargs)
         self.transcriber = transcriber

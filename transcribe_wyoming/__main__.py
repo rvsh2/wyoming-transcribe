@@ -1,4 +1,4 @@
-"""CLI entrypoint for the Cohere Wyoming server."""
+"""CLI entrypoint for the Wyoming Transcribe server."""
 
 from __future__ import annotations
 
@@ -9,9 +9,9 @@ from typing import Optional
 
 import torch
 
-from .handler import CohereWyomingEventHandler
+from .handler import TranscribeEventHandler
 from .speaker_id import SpeakerRegistry
-from .transcriber import CohereTranscriber, SUPPORTED_LANGUAGES
+from .transcriber import SpeechTranscriber, SUPPORTED_LANGUAGES
 from .vad import VadConfig
 from .wyoming_protocol import (
     AsrModel,
@@ -23,27 +23,40 @@ from .wyoming_protocol import (
 )
 
 
-LOGGER = logging.getLogger("cohere-wyoming")
+LOGGER = logging.getLogger("transcribe-wyoming")
 
 
-def build_info(transcriber: CohereTranscriber) -> Info:
-    model = AsrModel(
-        name=transcriber.model_name,
-        description="Cohere Transcribe speech-to-text model with speaker diarization",
-        attribution=Attribution(
-            name="syvai / Cohere",
-            url="https://huggingface.co/syvai/cohere-transcribe-diarize",
-        ),
-        installed=True,
-        languages=sorted(SUPPORTED_LANGUAGES),
-        version="0.1.0",
-    )
+def build_info(transcriber: SpeechTranscriber) -> Info:
+    if transcriber.stt_backend == "whispercpp":
+        model = AsrModel(
+            name="whisper.cpp",
+            description="Speech-to-text via a whisper.cpp server, with speaker identification",
+            attribution=Attribution(
+                name="ggml-org / whisper.cpp",
+                url="https://github.com/ggml-org/whisper.cpp",
+            ),
+            installed=True,
+            languages=sorted(SUPPORTED_LANGUAGES),
+            version="0.1.0",
+        )
+    else:
+        model = AsrModel(
+            name=transcriber.model_name,
+            description="Speech-to-text with speaker identification and diarization",
+            attribution=Attribution(
+                name="syvai / Cohere",
+                url="https://huggingface.co/syvai/cohere-transcribe-diarize",
+            ),
+            installed=True,
+            languages=sorted(SUPPORTED_LANGUAGES),
+            version="0.1.0",
+        )
     program = AsrProgram(
-        name="cohere-transcribe",
-        description="Wyoming protocol server backed by Cohere Transcribe",
+        name="wyoming-transcribe",
+        description="Wyoming protocol STT server with speaker identification",
         attribution=Attribution(
-            name="Cohere Wyoming",
-            url="https://github.com/rhasspy/wyoming-faster-whisper",
+            name="Wyoming Transcribe",
+            url="https://github.com/rvsh2/wyoming-transcribe",
         ),
         installed=True,
         models=[model],
@@ -54,7 +67,7 @@ def build_info(transcriber: CohereTranscriber) -> Info:
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Cohere Wyoming server for Home Assistant",
+        description="Wyoming Transcribe server for Home Assistant",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -113,7 +126,7 @@ async def serve(args: argparse.Namespace) -> None:
         )
 
     default_vad_config = VadConfig.from_env()
-    transcriber = CohereTranscriber(
+    transcriber = SpeechTranscriber(
         model_name=args.model,
         default_language=args.language,
         prefer_device=args.device,
@@ -168,8 +181,14 @@ async def serve(args: argparse.Namespace) -> None:
             LOGGER.info("Speaker embedding warmup done in %.1fs", _time.time() - _t)
 
         _t = _time.time()
-        _dummy_full = (_np.random.randn(30 * 16000).astype("float32") * 0.02)
-        transcriber._generate_diarized(_dummy_full, 16000, transcriber.default_language, 0.0)
+        if transcriber.stt_backend == "whispercpp":
+            # Round-trip a short clip so DNS/TCP and the server's decode path
+            # are exercised before the first real request.
+            _short = (_np.random.randn(16000).astype("float32") * 0.02)
+            transcriber._whispercpp_transcribe(_short, 16000, transcriber.default_language)
+        else:
+            _dummy_full = (_np.random.randn(30 * 16000).astype("float32") * 0.02)
+            transcriber._generate_diarized(_dummy_full, 16000, transcriber.default_language, 0.0)
         LOGGER.info("ASR model warmup done in %.1fs", _time.time() - _t)
     except Exception as error:  # warmup must never block serving
         LOGGER.warning("ASR model warmup failed (continuing): %s", error)
@@ -183,7 +202,7 @@ async def serve(args: argparse.Namespace) -> None:
     LOGGER.info("URI: %s", args.uri)
     LOGGER.info("Wyoming server ready")
     await server.run(
-        lambda *handler_args, **handler_kwargs: CohereWyomingEventHandler(
+        lambda *handler_args, **handler_kwargs: TranscribeEventHandler(
             transcriber,
             info_event,
             *handler_args,

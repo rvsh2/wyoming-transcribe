@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Optional
 
 
-LOGGER = logging.getLogger("cohere-wyoming.settings")
+LOGGER = logging.getLogger("transcribe-wyoming.settings")
 
 # How speaker identity is delivered to the Wyoming/HTTP consumer:
 #   prefix - transcript text lines are prefixed ("Krzysztof: ..."), no event field

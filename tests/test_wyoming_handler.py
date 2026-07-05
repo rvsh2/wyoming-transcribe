@@ -4,11 +4,11 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from cohere_wyoming.handler import CohereWyomingEventHandler
-from cohere_wyoming.wyoming_protocol import Event
+from transcribe_wyoming.handler import TranscribeEventHandler
+from transcribe_wyoming.wyoming_protocol import Event
 
 
-class CollectingHandler(CohereWyomingEventHandler):
+class CollectingHandler(TranscribeEventHandler):
     def __init__(self, transcriber, info_event):
         super().__init__(transcriber, info_event)
         self.events = []
@@ -85,7 +85,7 @@ class WyomingHandlerTests(unittest.TestCase):
         class FakeTranscriber:
             def transcribe_pcm(self, *_args, **_kwargs):
                 return SimpleNamespace(
-                    text="Mówca 0: kto to?",
+                    text="Speaker 0: kto to?",
                     language="pl",
                     text_mode="prefix",
                     speaker=None,

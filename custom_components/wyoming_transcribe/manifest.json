@@ -1,6 +1,6 @@
 {
-  "domain": "cohere_transcribe_diarize",
-  "name": "Cohere-Transcribe-Diarize",
+  "domain": "wyoming_transcribe",
+  "name": "Wyoming Transcribe",
   "codeowners": ["@rvsh2"],
   "config_flow": true,
   "dependencies": ["frontend", "http"],

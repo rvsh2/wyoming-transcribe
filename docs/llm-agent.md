@@ -17,11 +17,11 @@ newest pending clip, and voice clustering ties it to everything else that
 person said. Claiming "the newest clip + its voice cluster" therefore assigns
 the *right* voice even if another person interjected in between. That is
 exactly what `POST /speakers/{name}/samples/from-latest` and the HA service
-`cohere_transcribe_diarize.claim_latest` do (with a `max_age_seconds` guard,
+`wyoming_transcribe.claim_latest` do (with a `max_age_seconds` guard,
 default 300 s, refusing stale anchors).
 
 To avoid interrogating every one-off visitor, the companion service
-`cohere_transcribe_diarize.check_latest_voice` (backed by
+`wyoming_transcribe.check_latest_voice` (backed by
 `GET /pending/latest-voice`) reports how much the *current unknown voice* has
 already talked to the system (its cluster: utterance count, total seconds, age
 of the newest clip) and returns a ready `should_ask` verdict — ask only
@@ -37,11 +37,11 @@ script:
   sprawdz_nieznany_glos:
     alias: "Check unrecognized voice"
     description: >-
-      Call when an utterance is prefixed "Mówca N:" (unknown speaker).
+      Call when an utterance is prefixed "Speaker N:" (or the configured SPEAKER_LABEL) (unknown speaker).
       Returns should_ask — whether this person is worth asking who they
       are (only "regulars" qualify, not one-off visitors).
     sequence:
-      - service: cohere_transcribe_diarize.check_latest_voice
+      - service: wyoming_transcribe.check_latest_voice
         response_variable: voice
       - stop: ""
         response_variable: voice
@@ -61,7 +61,7 @@ script:
         description: "utterance_id from sprawdz_nieznany_glos"
         required: false
     sequence:
-      - service: cohere_transcribe_diarize.claim_latest
+      - service: wyoming_transcribe.claim_latest
         data:
           name: "{{ name }}"
           anchor_utterance_id: "{{ anchor_utterance_id | default('') }}"
@@ -71,7 +71,7 @@ System-prompt snippet (includes the anti-overzealousness rules):
 
 ```text
 Utterances are prefixed with the speaker's name ("Krzysztof: ...") or with
-"Mówca N:" when the voice is unrecognized. Rules for "Mówca N:":
+"Speaker N:" (or the configured SPEAKER_LABEL) when the voice is unrecognized. Rules for "Speaker N:" (or the configured SPEAKER_LABEL):
 1. Handle the request normally first.
 2. Do not ask about identity for short utterances (fewer than ~5 words).
 3. Before asking, call the sprawdz_nieznany_glos tool; ask only when
@@ -92,7 +92,7 @@ their voice would be enrolled under that name — hence the prompt asks the
 person to introduce themselves; misassignments are visible and reversible in
 the panel.
 
-The `cohere_transcribe_diarize_new_pending` event carries `voice_utterances`
+The `wyoming_transcribe_new_pending` event carries `voice_utterances`
 (cluster size), so a notification automation can likewise alert only about
 regulars (condition: `{{ trigger.event.data.voice_utterances >= 3 }}`).
 
@@ -109,11 +109,11 @@ role policy in your LLM agent's system prompt, keyed by name:
 
 ```text
 Utterances are prefixed with the speaker's name ("Krzysztof: ...") or with
-"Mówca N:" when the voice is unrecognized. Rules:
+"Speaker N:" (or the configured SPEAKER_LABEL) when the voice is unrecognized. Rules:
 - Krzysztof (admin): full control of the house, including locks, alarm and
   configuration.
 - Anna (user): lights, music and temperature; no locks or alarm.
-- guests / "Mówca N": answer informational questions only, perform no actions.
+- guests / "Speaker N": answer informational questions only, perform no actions.
 When a request exceeds the speaker's permissions, refuse and say why.
 ```
 

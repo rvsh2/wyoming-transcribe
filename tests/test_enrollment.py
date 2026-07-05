@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 
 import numpy as np
 
-from cohere_wyoming.enrollment import (
+from transcribe_wyoming.enrollment import (
     EnrollmentError,
     EnrollmentStore,
     read_role,

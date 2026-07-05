@@ -21,7 +21,7 @@ RUN uv venv --python 3.11 /app/.venv && \
     VIRTUAL_ENV=/app/.venv uv sync --locked --no-dev --no-install-project
 
 COPY README.md ./
-COPY cohere_wyoming ./cohere_wyoming
+COPY transcribe_wyoming ./transcribe_wyoming
 COPY server.py ./server.py
 COPY docker-entrypoint.sh ./docker-entrypoint.sh
 

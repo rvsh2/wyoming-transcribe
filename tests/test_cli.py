@@ -1,6 +1,6 @@
 import unittest
 
-from cohere_wyoming.__main__ import parse_args
+from transcribe_wyoming.__main__ import parse_args
 
 
 class CliTests(unittest.TestCase):

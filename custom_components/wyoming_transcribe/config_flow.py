@@ -1,4 +1,4 @@
-"""Config flow for the Cohere-Transcribe-Diarize integration."""
+"""Config flow for the Wyoming Transcribe integration."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ DATA_SCHEMA = vol.Schema(
 )
 
 
-class CohereTranscribeDiarizeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class WyomingTranscribeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Ask for host/port/token and verify the management API answers."""
 
     VERSION = 1
@@ -61,7 +61,7 @@ class CohereTranscribeDiarizeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN
 
                 if not errors:
                     return self.async_create_entry(
-                        title=f"Cohere-Transcribe-Diarize ({host})",
+                        title=f"Wyoming Transcribe ({host})",
                         data={CONF_HOST: host, CONF_PORT: port, CONF_API_TOKEN: token},
                     )
 

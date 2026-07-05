@@ -6,8 +6,8 @@ from unittest.mock import patch
 import numpy as np
 import torch
 
-from cohere_wyoming import audio as audio_module
-from cohere_wyoming.transcriber import CohereTranscriber
+from transcribe_wyoming import audio as audio_module
+from transcribe_wyoming.transcriber import SpeechTranscriber
 
 
 class FakeInputs(dict):
@@ -40,7 +40,7 @@ class AudioAndTranscriberTests(unittest.TestCase):
         ffmpeg_run.assert_called_once()
 
     def test_load_model_falls_back_to_cpu_when_cuda_load_fails(self):
-        transcriber = CohereTranscriber()
+        transcriber = SpeechTranscriber()
 
         class FakeModel:
             def __init__(self):
@@ -92,7 +92,7 @@ class AudioAndTranscriberTests(unittest.TestCase):
         empty_cache.assert_called_once()
 
     def test_load_model_artifacts_prefers_local_cache_before_network(self):
-        transcriber = CohereTranscriber()
+        transcriber = SpeechTranscriber()
         call_log = []
         fake_model = object()
         fake_processor = object()
@@ -129,7 +129,7 @@ class AudioAndTranscriberTests(unittest.TestCase):
         self.assertIs(model, fake_model)
 
     def test_silent_audio_returns_empty_transcription_without_generate(self):
-        transcriber = CohereTranscriber()
+        transcriber = SpeechTranscriber()
         fake_model = SimpleNamespace(device="cpu", dtype=torch.float32)
         fake_model.generate = unittest.mock.Mock()
         fake_processor = unittest.mock.Mock()
@@ -163,7 +163,7 @@ class AudioAndTranscriberTests(unittest.TestCase):
         self.assertFalse(audio_module.is_effectively_silent(audio))
 
     def test_low_level_noise_returns_empty_transcription_without_generate(self):
-        transcriber = CohereTranscriber()
+        transcriber = SpeechTranscriber()
         fake_model = SimpleNamespace(device="cpu", dtype=torch.float32)
         fake_model.generate = unittest.mock.Mock()
         fake_processor = unittest.mock.Mock()
@@ -183,7 +183,7 @@ class AudioAndTranscriberTests(unittest.TestCase):
         fake_model.generate.assert_not_called()
 
     def test_vad_rejected_audio_returns_empty_transcription_without_generate(self):
-        transcriber = CohereTranscriber()
+        transcriber = SpeechTranscriber()
         fake_model = SimpleNamespace(device="cpu", dtype=torch.float32)
         fake_model.generate = unittest.mock.Mock()
         fake_processor = unittest.mock.Mock()
@@ -211,7 +211,7 @@ class AudioAndTranscriberTests(unittest.TestCase):
         fake_model.generate.assert_not_called()
 
     def test_vad_fallback_allows_transcription(self):
-        transcriber = CohereTranscriber()
+        transcriber = SpeechTranscriber()
 
         class FakeModel:
             device = "cpu"
@@ -259,13 +259,13 @@ class AudioAndTranscriberTests(unittest.TestCase):
         audio = 0.05 * np.sin(2 * np.pi * 220.0 * t)
         result = transcriber.transcribe_pcm(audio, sample_rate=16000, language="pl")
 
-        self.assertEqual(result.text, "Mówca 0: speech detected")
+        self.assertEqual(result.text, "Speaker 0: speech detected")
         self.assertEqual(len(result.segments), 1)
         self.assertEqual(result.segments[0]["speaker"], 0)
         self.assertEqual(result.segments[0]["text"], "speech detected")
 
     def test_speech_bounds_pads_and_clips_vad_span(self):
-        bounds = CohereTranscriber._speech_bounds
+        bounds = SpeechTranscriber._speech_bounds
 
         span = SimpleNamespace(speech_start_sample=96000, speech_end_sample=112000)
         # 0.1 s pad = 1600 samples at 16 kHz.
@@ -281,7 +281,7 @@ class AudioAndTranscriberTests(unittest.TestCase):
         self.assertEqual(bounds(inverted, 160000, 16000), (0, 160000))
 
     def test_transcription_crops_to_vad_speech_span_and_keeps_global_timestamps(self):
-        transcriber = CohereTranscriber()
+        transcriber = SpeechTranscriber()
         seen_audio_lengths = []
 
         class FakeModel:
@@ -338,10 +338,10 @@ class AudioAndTranscriberTests(unittest.TestCase):
         self.assertEqual(result.segments[0]["start"], 5.9)
         self.assertEqual(result.segments[0]["end"], 6.9)
         self.assertEqual(result.duration, 10.0)
-        self.assertEqual(result.text, "Mówca 0: która godzina")
+        self.assertEqual(result.text, "Speaker 0: która godzina")
 
     def test_vad_rejects_too_quiet_detected_speech(self):
-        transcriber = CohereTranscriber()
+        transcriber = SpeechTranscriber()
         fake_model = SimpleNamespace(device="cpu", dtype=torch.float32)
         fake_model.generate = unittest.mock.Mock()
         fake_processor = unittest.mock.Mock()
@@ -369,7 +369,7 @@ class AudioAndTranscriberTests(unittest.TestCase):
         fake_model.generate.assert_not_called()
 
     def test_vad_rejects_speech_too_close_to_noise(self):
-        transcriber = CohereTranscriber()
+        transcriber = SpeechTranscriber()
         fake_model = SimpleNamespace(device="cpu", dtype=torch.float32)
         fake_model.generate = unittest.mock.Mock()
         fake_processor = unittest.mock.Mock()
@@ -399,7 +399,7 @@ class AudioAndTranscriberTests(unittest.TestCase):
 
 class SpeakerTextAndIdentificationTests(unittest.TestCase):
     def test_render_speaker_text_modes(self):
-        from cohere_wyoming.transcriber import render_speaker_text
+        from transcribe_wyoming.transcriber import render_speaker_text
 
         segments = [
             {"speaker": 0, "name": "Krzysztof", "start": 0.0, "end": 1.0, "text": "zgaś"},
@@ -409,11 +409,11 @@ class SpeakerTextAndIdentificationTests(unittest.TestCase):
 
         self.assertEqual(
             render_speaker_text(segments, mode="prefix"),
-            "Krzysztof: zgaś światło\nMówca 1: dobranoc",
+            "Krzysztof: zgaś światło\nSpeaker 1: dobranoc",
         )
         self.assertEqual(
             render_speaker_text(segments, mode="both"),
-            "Krzysztof: zgaś światło\nMówca 1: dobranoc",
+            "Krzysztof: zgaś światło\nSpeaker 1: dobranoc",
         )
         self.assertEqual(
             render_speaker_text(segments, mode="field"),
@@ -421,9 +421,9 @@ class SpeakerTextAndIdentificationTests(unittest.TestCase):
         )
 
     def test_identify_speakers_concatenates_per_speaker(self):
-        from cohere_wyoming.speaker_id import SpeakerMatch
+        from transcribe_wyoming.speaker_id import SpeakerMatch
 
-        transcriber = CohereTranscriber()
+        transcriber = SpeechTranscriber()
         received_clips = []
 
         class FakeRegistry:
@@ -473,25 +473,25 @@ class SpeakerTextAndIdentificationTests(unittest.TestCase):
             {"speaker": 0, "name": "Krzysztof", "score": 0.8, "start": 0.0, "end": 5.0, "text": "a"},
             {"speaker": 1, "name": "Anna", "score": 0.7, "start": 5.0, "end": 6.0, "text": "b"},
         ]
-        name, score = CohereTranscriber._dominant_speaker(segments)
+        name, score = SpeechTranscriber._dominant_speaker(segments)
         self.assertEqual(name, "Krzysztof")
         self.assertEqual(score, 0.8)
 
     def test_dominant_speaker_unrecognized_returns_none(self):
         segments = [{"speaker": 0, "start": 0.0, "end": 5.0, "text": "a"}]
-        name, score = CohereTranscriber._dominant_speaker(segments)
+        name, score = SpeechTranscriber._dominant_speaker(segments)
         self.assertIsNone(name)
         self.assertIsNone(score)
 
     def test_save_pending_utterance_buffers_dominant_voice(self):
         import tempfile
 
-        from cohere_wyoming.pending import PendingStore
+        from transcribe_wyoming.pending import PendingStore
 
         with tempfile.TemporaryDirectory() as tmp:
-            from cohere_wyoming.speaker_id import SpeakerMatch
+            from transcribe_wyoming.speaker_id import SpeakerMatch
 
-            transcriber = CohereTranscriber()
+            transcriber = SpeechTranscriber()
             transcriber.pending_store = PendingStore(tmp)
             embedding = np.array([0.6, 0.8], dtype=np.float32)
             transcriber.speaker_registry = SimpleNamespace(
@@ -520,7 +520,7 @@ class SpeakerTextAndIdentificationTests(unittest.TestCase):
             self.assertEqual(clips[0]["best_score"], 0.31)
 
     def test_save_pending_utterance_never_raises(self):
-        transcriber = CohereTranscriber()
+        transcriber = SpeechTranscriber()
         transcriber.pending_store = SimpleNamespace(
             save=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("disk full"))
         )
@@ -546,7 +546,7 @@ class MergeDiarizedWindowsTests(unittest.TestCase):
         return SimpleNamespace(enabled=True, embed_batch=lambda clips: next(calls))
 
     def test_different_voices_in_two_windows_get_distinct_speakers(self):
-        transcriber = CohereTranscriber()
+        transcriber = SpeechTranscriber()
         transcriber.speaker_registry = self._registry(
             [
                 [np.array([1.0, 0.0], dtype=np.float32)],
@@ -565,7 +565,7 @@ class MergeDiarizedWindowsTests(unittest.TestCase):
         self.assertEqual([segment["speaker"] for segment in merged], [0, 1])
 
     def test_same_voice_in_two_windows_keeps_one_speaker(self):
-        transcriber = CohereTranscriber()
+        transcriber = SpeechTranscriber()
         voice = np.array([0.6, 0.8], dtype=np.float32)
         transcriber.speaker_registry = self._registry([[voice], [voice.copy()]])
         windows = [
@@ -580,7 +580,7 @@ class MergeDiarizedWindowsTests(unittest.TestCase):
         self.assertEqual([segment["speaker"] for segment in merged], [0, 0])
 
     def test_without_registry_raw_indices_are_preserved(self):
-        transcriber = CohereTranscriber()
+        transcriber = SpeechTranscriber()
         transcriber.speaker_registry = None
         windows = [
             self._window(0, 0.0, 10.0, "first window"),
@@ -596,7 +596,7 @@ class MergeDiarizedWindowsTests(unittest.TestCase):
         self.assertEqual([segment["speaker"] for segment in merged], [0, 0])
 
     def test_embedding_failure_preserves_raw_indices(self):
-        transcriber = CohereTranscriber()
+        transcriber = SpeechTranscriber()
 
         def broken_embed(_clips):
             raise RuntimeError("no speechbrain")
@@ -614,7 +614,7 @@ class MergeDiarizedWindowsTests(unittest.TestCase):
         self.assertEqual([segment["speaker"] for segment in merged], [0, 0])
 
     def test_embedding_failure_mid_merge_assigns_fresh_indices(self):
-        transcriber = CohereTranscriber()
+        transcriber = SpeechTranscriber()
         calls = {"count": 0}
 
         def embed_batch(_clips):
@@ -639,7 +639,7 @@ class MergeDiarizedWindowsTests(unittest.TestCase):
         self.assertEqual([segment["speaker"] for segment in merged], [0, 1])
 
     def test_merge_returns_reusable_speaker_embeddings(self):
-        transcriber = CohereTranscriber()
+        transcriber = SpeechTranscriber()
         alice = np.array([1.0, 0.0], dtype=np.float32)
         transcriber.speaker_registry = self._registry([[alice], [alice.copy()]])
         windows = [
@@ -655,9 +655,9 @@ class MergeDiarizedWindowsTests(unittest.TestCase):
         np.testing.assert_allclose(embeddings[0], alice, atol=1e-6)
 
     def test_identify_speakers_reuses_provided_embeddings(self):
-        from cohere_wyoming.speaker_id import SpeakerMatch
+        from transcribe_wyoming.speaker_id import SpeakerMatch
 
-        transcriber = CohereTranscriber()
+        transcriber = SpeechTranscriber()
 
         class FakeRegistry:
             enabled = True
@@ -689,7 +689,7 @@ class MergeDiarizedWindowsTests(unittest.TestCase):
         self.assertIs(result[0], provided[0])
 
     def test_two_speakers_per_window_are_matched_pairwise(self):
-        transcriber = CohereTranscriber()
+        transcriber = SpeechTranscriber()
         alice = np.array([1.0, 0.0], dtype=np.float32)
         bob = np.array([0.0, 1.0], dtype=np.float32)
         # Window 2 hears them in reverse local order (bob=0, alice=1).
@@ -708,7 +708,7 @@ class MergeDiarizedWindowsTests(unittest.TestCase):
 
 class TranscribeWindowTruncationTests(unittest.TestCase):
     def test_truncated_window_is_split_and_retried(self):
-        transcriber = CohereTranscriber()
+        transcriber = SpeechTranscriber()
         calls = []
 
         def fake_generate(chunk, _sample_rate, _language, _temperature):
@@ -733,7 +733,7 @@ class TranscribeWindowTruncationTests(unittest.TestCase):
         self.assertEqual(windows[1][0]["start"], 75.0)
 
     def test_truncated_short_window_is_kept_with_warning(self):
-        transcriber = CohereTranscriber()
+        transcriber = SpeechTranscriber()
 
         def fake_generate(_chunk, _sample_rate, _language, _temperature):
             return (
@@ -742,7 +742,7 @@ class TranscribeWindowTruncationTests(unittest.TestCase):
             )
 
         with patch.object(transcriber, "_generate_diarized", side_effect=fake_generate):
-            with self.assertLogs("cohere-wyoming.transcriber", level="WARNING") as logs:
+            with self.assertLogs("transcribe-wyoming.transcriber", level="WARNING") as logs:
                 windows = transcriber._transcribe_window(
                     np.zeros(10 * 16000, dtype=np.float32), 0.0, 16000, "pl", 0.0
                 )
@@ -752,8 +752,8 @@ class TranscribeWindowTruncationTests(unittest.TestCase):
 
 
 class PromptTokenTests(unittest.TestCase):
-    def _transcriber(self, known: dict) -> CohereTranscriber:
-        transcriber = CohereTranscriber(default_language="pl")
+    def _transcriber(self, known: dict) -> SpeechTranscriber:
+        transcriber = SpeechTranscriber(default_language="pl")
 
         class Tok:
             unk_token_id = 0
@@ -770,7 +770,7 @@ class PromptTokenTests(unittest.TestCase):
 
     @staticmethod
     def _structural(**extra) -> dict:
-        from cohere_wyoming.transcriber import DIARIZE_PROMPT_TEMPLATE
+        from transcribe_wyoming.transcriber import DIARIZE_PROMPT_TEMPLATE
 
         known = {tpl: 5 for tpl in DIARIZE_PROMPT_TEMPLATE if "{lang}" not in tpl}
         known.update(extra)

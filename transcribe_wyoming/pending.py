@@ -31,7 +31,7 @@ import numpy as np
 import soundfile as sf
 
 
-LOGGER = logging.getLogger("cohere-wyoming.pending")
+LOGGER = logging.getLogger("transcribe-wyoming.pending")
 
 PENDING_DIRNAME = ".pending"
 

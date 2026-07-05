@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cohere_wyoming.history import RecognitionLog
+from transcribe_wyoming.history import RecognitionLog
 
 
 class RecognitionLogTests(unittest.TestCase):

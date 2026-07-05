@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from cohere_wyoming.pending import PendingError, PendingStore
+from transcribe_wyoming.pending import PendingError, PendingStore
 
 
 def tone(seconds: float = 2.0, sr: int = 16000) -> np.ndarray:

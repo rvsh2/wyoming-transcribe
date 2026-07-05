@@ -47,7 +47,7 @@ def make_upload_file(content: bytes, filename: str = "test.wav") -> FakeUploadFi
     return FakeUploadFile(content=content, filename=filename)
 
 
-class CohereTranscribeApiTests(unittest.TestCase):
+class TranscribeApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self.audio_bytes = make_wav_bytes()
         self.service_model = patch.object(server.service, "model", object())
@@ -178,7 +178,7 @@ class CohereTranscribeApiTests(unittest.TestCase):
 
     def test_srt_and_vtt_render_one_cue_per_diarized_segment(self):
         result = {
-            "text": "alice: hej\nMówca 1: cześć",
+            "text": "alice: hej\nSpeaker 1: cześć",
             "language": "pl",
             "duration": 10.0,
             "processing_time": 0.1,
@@ -192,13 +192,13 @@ class CohereTranscribeApiTests(unittest.TestCase):
         self.assertEqual(
             srt,
             "1\n00:00:00,000 --> 00:00:02,500\nalice: hej\n\n"
-            "2\n00:00:03,000 --> 00:00:04,000\nMówca 1: cześć\n\n",
+            "2\n00:00:03,000 --> 00:00:04,000\nSpeaker 1: cześć\n\n",
         )
 
         vtt = server.format_subtitles(result, srt=False)
         self.assertTrue(vtt.startswith("WEBVTT\n\n"))
         self.assertIn("00:00:00.000 --> 00:00:02.500\nalice: hej", vtt)
-        self.assertIn("00:00:03.000 --> 00:00:04.000\nMówca 1: cześć", vtt)
+        self.assertIn("00:00:03.000 --> 00:00:04.000\nSpeaker 1: cześć", vtt)
 
     def test_subtitles_fall_back_to_single_cue_without_segments(self):
         result = {"text": "hello world", "language": "en", "duration": 1.25}
@@ -209,7 +209,7 @@ class CohereTranscribeApiTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
 
-        from cohere_wyoming.settings import SettingsStore
+        from transcribe_wyoming.settings import SettingsStore
 
         with tempfile.TemporaryDirectory() as tmp:
             store = SettingsStore(Path(tmp) / ".settings.json")
@@ -276,8 +276,8 @@ class CohereTranscribeApiTests(unittest.TestCase):
 
         import numpy as np
 
-        from cohere_wyoming.enrollment import EnrollmentStore
-        from cohere_wyoming.pending import PendingStore
+        from transcribe_wyoming.enrollment import EnrollmentStore
+        from transcribe_wyoming.pending import PendingStore
 
         with tempfile.TemporaryDirectory() as tmp:
             pending = PendingStore(tmp)
@@ -333,8 +333,8 @@ class CohereTranscribeApiTests(unittest.TestCase):
 
         import numpy as np
 
-        from cohere_wyoming.enrollment import EnrollmentStore
-        from cohere_wyoming.pending import PendingStore
+        from transcribe_wyoming.enrollment import EnrollmentStore
+        from transcribe_wyoming.pending import PendingStore
 
         with tempfile.TemporaryDirectory() as tmp:
             pending = PendingStore(tmp)
@@ -380,8 +380,8 @@ class CohereTranscribeApiTests(unittest.TestCase):
 
         import numpy as np
 
-        from cohere_wyoming.enrollment import EnrollmentStore
-        from cohere_wyoming.pending import PendingStore
+        from transcribe_wyoming.enrollment import EnrollmentStore
+        from transcribe_wyoming.pending import PendingStore
 
         with tempfile.TemporaryDirectory() as tmp:
             pending = PendingStore(tmp)
@@ -425,8 +425,8 @@ class CohereTranscribeApiTests(unittest.TestCase):
 
         import numpy as np
 
-        from cohere_wyoming.enrollment import EnrollmentStore
-        from cohere_wyoming.pending import PendingStore
+        from transcribe_wyoming.enrollment import EnrollmentStore
+        from transcribe_wyoming.pending import PendingStore
 
         with tempfile.TemporaryDirectory() as tmp:
             pending = PendingStore(tmp)
@@ -508,7 +508,7 @@ class CohereTranscribeApiTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
 
-        from cohere_wyoming.enrollment import EnrollmentStore
+        from transcribe_wyoming.enrollment import EnrollmentStore
 
         with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
             store = EnrollmentStore(source_dir)
@@ -560,7 +560,7 @@ class CohereTranscribeApiTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
 
-        from cohere_wyoming.history import RecognitionLog
+        from transcribe_wyoming.history import RecognitionLog
 
         with tempfile.TemporaryDirectory() as tmp:
             RecognitionLog(tmp).append(text="zgaś światło", language="pl", duration=2.0, speaker="Krzysztof")

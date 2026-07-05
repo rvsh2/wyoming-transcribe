@@ -1,23 +1,37 @@
-# Cohere-Transcribe-Diarize
+# Wyoming Transcribe
 
-Self-hosted speech-to-text for Home Assistant (Wyoming protocol) built on the
-`syvai/cohere-transcribe-diarize` model, with **speaker diarization** (who spoke
-when) and optional **speaker identification** (mapping voices to named people
-you enrolled).
+Self-hosted speech-to-text for Home Assistant (Wyoming protocol) with
+**speaker identification** (mapping voices to named people you enrolled) and
+two interchangeable STT backends:
 
+| `STT_BACKEND` | Engine | Diarization | Best for |
+|---|---|---|---|
+| `whispercpp` | [whisper.cpp](https://github.com/ggml-org/whisper.cpp) server over HTTP (e.g. `large-v3-turbo`) | no (one speaker per utterance) | **voice assistant commands** — markedly more robust on short/degraded audio, no hallucination loops |
+| `cohere` (default) | local [`syvai/cohere-transcribe-diarize`](https://huggingface.co/syvai/cohere-transcribe-diarize) | yes (who spoke when) | dictation and multi-speaker recordings |
+
+Both backends share the same pipeline: Silero VAD cropping, ECAPA voiceprint
+speaker identification, unknown-voice enrollment and recognition history.
 Transcripts come back with per-speaker prefixes; when a voice matches an
 enrolled person, the label becomes their name:
 
 ```
-Krzysztof: zgaś światło
-Mówca 1: We have a game this weekend.
+Krzysztof: turn off the lights
+Speaker 1: We have a game this weekend.
 ```
 
-Notes: the model is optimized for English (other languages transcribe but
-diarize less reliably); audio longer than 30 s is split into windows
-automatically and anonymous `Mówca N` labels (`Mówca` is Polish for "Speaker",
-the server's built-in label prefix) are kept consistent across windows by
-voiceprint matching.
+The label for unenrolled speakers is configurable via `SPEAKER_LABEL`
+(default `Speaker`; set e.g. `SPEAKER_LABEL=Mówca` for Polish deployments —
+the label ends up in the transcript your conversation agent sees).
+
+Backend selection: `STT_BACKEND=whispercpp` plus `WHISPERCPP_URL`
+(default `http://whispercpp:4050`) pointing at a running
+[whisper.cpp server](https://github.com/ggml-org/whisper.cpp/tree/master/examples/server),
+e.g. `whisper-server --host 0.0.0.0 --port 4050 --model /models/ggml-large-v3-turbo.bin --beam-size 5`.
+
+Cohere-backend notes: the diarize model is optimized for English (other
+languages transcribe but diarize less reliably); audio longer than 30 s is
+split into windows automatically and anonymous `Speaker N` labels are kept
+consistent across windows by voiceprint matching.
 
 ## Quick start (Docker)
 
@@ -56,7 +70,7 @@ docker run --rm -v /opt/wyoming-transcribe/data:/root/.cache/huggingface \
 
 ### Custom integration (HACS): panel + sensors + services
 
-The repo ships `custom_components/cohere_transcribe_diarize`: the full
+The repo ships `custom_components/wyoming_transcribe`: the full
 management UI as a native HA sidebar panel (admin-only), status sensors (model
 status, enrolled speakers, pending voices) and automation/LLM hooks. The panel
 talks to the server through an authenticated proxy — the API token lives only
@@ -70,23 +84,23 @@ Install:
 1. On the server: set `API_TOKEN` (and `UI_BIND=0.0.0.0` if HA runs on another
    host), `docker compose up -d`.
 2. HACS → Integrations → ⋮ → **Custom repositories** → add this repo URL,
-   category *Integration* → install **Cohere-Transcribe-Diarize** → restart HA.
+   category *Integration* → install **Wyoming Transcribe** → restart HA.
 3. Settings → Devices & services → **Add integration** →
-   *Cohere-Transcribe-Diarize* → enter the server host, port `8580` and the API
+   *Wyoming Transcribe* → enter the server host, port `8580` and the API
    token.
 
 Hooks for automations and LLM tools:
 
-- **Event `cohere_transcribe_diarize_new_pending`** — a new unrecognized voice
+- **Event `wyoming_transcribe_new_pending`** — a new unrecognized voice
   landed in the pending buffer (data: `utterance_id`, `text`, `seconds`,
   `created`, `voice_utterances`). Pending clips are polled every 15 s.
-- **Service `cohere_transcribe_diarize.claim_latest`** — voice-anchored
+- **Service `wyoming_transcribe.claim_latest`** — voice-anchored
   enrollment of the newest unknown utterance (the "who are you?" tool).
-- **Service `cohere_transcribe_diarize.claim_utterance`** — enroll an explicit
+- **Service `wyoming_transcribe.claim_utterance`** — enroll an explicit
   clip by `utterance_id`.
-- **Service `cohere_transcribe_diarize.check_latest_voice`** — how much the
+- **Service `wyoming_transcribe.check_latest_voice`** — how much the
   current unknown voice has already talked; returns a `should_ask` verdict.
-- **Service `cohere_transcribe_diarize.set_role`** — set `admin`/`user`/`guest`.
+- **Service `wyoming_transcribe.set_role`** — set `admin`/`user`/`guest`.
 
 Ready-made scripts and system-prompt snippets for an LLM conversation agent
 (the "who are you?" enrollment flow, role-based authorization patterns):
@@ -188,7 +202,7 @@ cp .env.example .env
 UV_CACHE_DIR=/tmp/uv-cache uv venv && UV_CACHE_DIR=/tmp/uv-cache uv sync
 
 # Wyoming server (Home Assistant talks to this)
-UV_CACHE_DIR=/tmp/uv-cache uv run python -m cohere_wyoming --uri tcp://0.0.0.0:10300 --language pl
+UV_CACHE_DIR=/tmp/uv-cache uv run python -m transcribe_wyoming --uri tcp://0.0.0.0:10300 --language pl
 
 # management UI/API (add --no-load-model to skip loading the ASR model)
 UV_CACHE_DIR=/tmp/uv-cache uv run python server.py --host 0.0.0.0 --port 8580 --language pl

@@ -1,5 +1,5 @@
 {
-  "name": "Cohere-Transcribe-Diarize (speaker diarization STT)",
+  "name": "Wyoming Transcribe (STT with speaker identification)",
   "render_readme": true,
   "homeassistant": "2024.6.0"
 }

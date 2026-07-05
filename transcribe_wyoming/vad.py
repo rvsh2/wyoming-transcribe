@@ -12,7 +12,7 @@ import numpy as np
 import torch
 
 
-LOGGER = logging.getLogger("cohere-wyoming.vad")
+LOGGER = logging.getLogger("transcribe-wyoming.vad")
 
 
 def _read_bool_env(name: str, default: bool) -> bool:

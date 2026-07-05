@@ -19,6 +19,13 @@ services:
       - /opt/wyoming-transcribe/data:/root/.cache/huggingface
       - /opt/wyoming-transcribe/speakers:/app/speakers
     environment:
+      # STT engine: "whispercpp" (HTTP to a whisper.cpp server; won the
+      # 17-clip Polish eval — no hallucination loops on short commands) or
+      # "cohere" (local diarize model — multi-speaker dictation).
+      - STT_BACKEND=${STT_BACKEND:-whispercpp}
+      - WHISPERCPP_URL=${WHISPERCPP_URL:-http://whispercpp:4050}
+      # Label for unenrolled speakers in transcript text (language-specific).
+      - SPEAKER_LABEL=Mówca
       - HF_HOME=/root/.cache/huggingface
       - HF_TOKEN=${HF_TOKEN:-}
       - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:-}
