@@ -531,6 +531,10 @@ class SpeechTranscriber:
                 "language": language,
                 "response_format": "json",
                 "temperature": "0.0",
+                # Beam search noticeably improves short degraded commands
+                # ("Agata." vs "Pagata." on real clips); the server-side
+                # --beam-size flag crashes at startup, per-request works.
+                "beam_size": "5",
             },
             timeout=60,
         )
