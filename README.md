@@ -7,7 +7,13 @@ two interchangeable STT backends:
 | `STT_BACKEND` | Engine | Diarization | Best for |
 |---|---|---|---|
 | `whispercpp` | [whisper.cpp](https://github.com/ggml-org/whisper.cpp) server over HTTP (e.g. `large-v3-turbo`) | no (one speaker per utterance) | **voice assistant commands** — markedly more robust on short/degraded audio, no hallucination loops |
-| `cohere` (default) | local [`syvai/cohere-transcribe-diarize`](https://huggingface.co/syvai/cohere-transcribe-diarize) | yes (who spoke when) | dictation and multi-speaker recordings |
+| `cohere` | local [`syvai/cohere-transcribe-diarize`](https://huggingface.co/syvai/cohere-transcribe-diarize) | yes (who spoke when) | dictation and multi-speaker recordings |
+
+Defaults: the shipped `compose.yml` / `.env.example` select **`whispercpp`**
+(recommended for a voice assistant; requires a running whisper.cpp server).
+With no `STT_BACKEND` set at all, bare `python -m transcribe_wyoming` falls
+back to `cohere`, which is self-contained (downloads its model from
+Hugging Face) but hallucination-prone on short degraded utterances.
 
 Both backends share the same pipeline: Silero VAD cropping, ECAPA voiceprint
 speaker identification, unknown-voice enrollment and recognition history.
