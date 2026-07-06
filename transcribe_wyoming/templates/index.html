@@ -189,18 +189,18 @@
 <body>
 <div class="container">
     <h1>Wyoming Transcribe Server</h1>
-    <p>whisper.cpp-compatible management API with speaker identification</p>
+    <p data-i18n="tagline">whisper.cpp-compatible management API with speaker identification</p>
 
     <div class="card">
         <h2>Status</h2>
         <p>Model: <code>__MODEL_ID__</code></p>
         <p>Backend: <code>__MODEL_BACKEND__</code></p>
-        <p>Status: <span class="status">● Running</span></p>
+        <p>Status: <span class="status" data-i18n="statusRunning">● Running</span></p>
     </div>
 
     <div class="card">
-        <h2>Quick Transcription</h2>
-        <div id="asr-unavailable" class="hint" style="display: none; padding: 0.6rem 0.8rem; border: 1px solid #d9822b; border-radius: 6px; margin-bottom: 1rem;">
+        <h2 data-i18n="quickTitle">Quick Transcription</h2>
+        <div id="asr-unavailable" class="hint" style="display: none; padding: 0.6rem 0.8rem; border: 1px solid #d9822b; border-radius: 6px; margin-bottom: 1rem;" data-i18n="asrUnavailable">
             The ASR model is not loaded in this process (enrollment-only mode), so
             HTTP transcription is unavailable here. Speech-to-text for Home Assistant
             runs in the Wyoming server on port <code>10300</code>.
@@ -209,52 +209,52 @@
             <div class="input-grid">
                 <div class="input-panel">
                     <div class="form-row">
-                        <label for="audio-file">Upload Audio</label>
+                        <label for="audio-file" data-i18n="uploadAudioLabel">Upload Audio</label>
                         <input id="audio-file" name="file" type="file" accept="audio/*">
-                        <div class="hint">Choose an existing audio file from your device.</div>
+                        <div class="hint" data-i18n="uploadAudioHint">Choose an existing audio file from your device.</div>
                     </div>
                 </div>
                 <div class="input-panel">
                     <div class="form-row">
-                        <label>Record Voice</label>
+                        <label data-i18n="recordVoice">Record Voice</label>
                         <div class="button-row">
-                            <button id="record-button" class="button-secondary" type="button">Record Voice</button>
-                            <button id="clear-recording-button" class="button-secondary" type="button" disabled>Clear Recording</button>
+                            <button id="record-button" class="button-secondary" type="button" data-i18n="recordVoice">Record Voice</button>
+                            <button id="clear-recording-button" class="button-secondary" type="button" disabled data-i18n="clearRecording">Clear Recording</button>
                         </div>
-                        <div id="recording-status" class="recording-status">No recording captured yet.</div>
-                        <div class="hint">Microphone recording usually works on localhost or over HTTPS. On plain HTTP in LAN mode, some browsers may block microphone access.</div>
+                        <div id="recording-status" class="recording-status" data-i18n="noRecordingYet">No recording captured yet.</div>
+                        <div class="hint" data-i18n="micUsageHint">Microphone recording usually works on localhost or over HTTPS. On plain HTTP in LAN mode, some browsers may block microphone access.</div>
                     </div>
                 </div>
             </div>
             <div class="form-row">
-                <label for="language">Language</label>
+                <label for="language" data-i18n="languageLabel">Language</label>
                 <select id="language" name="language">__LANGUAGE_OPTIONS__</select>
-                <div class="hint">Language is a hint for the model. Clear audio may still transcribe correctly even if a different language is selected.</div>
+                <div class="hint" data-i18n="languageHint">Language is a hint for the model. Clear audio may still transcribe correctly even if a different language is selected.</div>
             </div>
-            <div id="source-summary" class="source-summary">Active source: none selected.</div>
-            <button id="submit-button" type="submit">Transcribe</button>
+            <div id="source-summary" class="source-summary" data-i18n="noSourceSelected">Active source: none selected.</div>
+            <button id="submit-button" type="submit" data-i18n="transcribe">Transcribe</button>
         </form>
         <div class="form-row" style="margin-top: 1rem;">
-            <label for="transcription-result">Result</label>
-            <pre id="transcription-result" class="result"><code>Choose an audio file and click Transcribe.</code></pre>
+            <label for="transcription-result" data-i18n="resultLabel">Result</label>
+            <pre id="transcription-result" class="result"><code data-i18n="chooseAndTranscribe">Choose an audio file and click Transcribe.</code></pre>
         </div>
     </div>
 
     <div class="card">
-        <h2>Speakers — Voice Recognition</h2>
-        <p class="hint">Define people and record/upload voice samples. The longer and cleaner the sample
+        <h2 data-i18n="speakersTitle">Speakers — Voice Recognition</h2>
+        <p class="hint" data-i18n="speakersHint">Define people and record/upload voice samples. The longer and cleaner the sample
             (10–30 s recommended), the more reliable the recognition. Changes are picked up by the engine immediately.</p>
         <div class="speaker-add">
-            <input id="new-speaker-name" type="text" placeholder="New person's name" autocomplete="off">
-            <button id="add-speaker-button" type="button">Add person</button>
+            <input id="new-speaker-name" type="text" placeholder="New person's name" autocomplete="off" data-i18n-placeholder="newSpeakerPlaceholder">
+            <button id="add-speaker-button" type="button" data-i18n="addPerson">Add person</button>
         </div>
         <div id="speakers-status" class="hint"></div>
         <div id="speakers-list"></div>
     </div>
 
     <div class="card">
-        <h2>Unrecognized Voices</h2>
-        <p class="hint">Utterances whose voice did not match any known person wait here
+        <h2 data-i18n="pendingTitle">Unrecognized Voices</h2>
+        <p class="hint" data-i18n="pendingHint">Utterances whose voice did not match any known person wait here
             (grouped: one group = the same voice). Listen, check who is speaking and assign
             to a person — by default the whole group is assigned, so the profile immediately
             gets several samples. The same recordings can be assigned by the LLM pipeline via
@@ -264,73 +264,72 @@
     </div>
 
     <div class="card">
-        <h2>Recognition Log</h2>
-        <p class="hint">Recent transcriptions with the identification decision (who + confidence). Helps
+        <h2 data-i18n="historyTitle">Recognition Log</h2>
+        <p class="hint" data-i18n="historyHint">Recent transcriptions with the identification decision (who + confidence). Helps
             you judge whether the recognition thresholds are well tuned and catch mistakes.</p>
         <div id="history-status" class="hint"></div>
         <div id="history-list"></div>
         <div class="button-row" style="margin-top: 0.5rem;">
-            <button id="history-refresh" class="button-secondary btn-small" type="button">Refresh</button>
+            <button id="history-refresh" class="button-secondary btn-small" type="button" data-i18n="refresh">Refresh</button>
         </div>
     </div>
 
     <div class="card">
-        <h2>Settings</h2>
+        <h2 data-i18n="settingsTitle">Settings</h2>
         <div class="form-row">
-            <label for="speaker-text-mode">Speaker identity delivery</label>
+            <label for="speaker-text-mode" data-i18n="speakerTextModeLabel">Speaker identity delivery</label>
             <select id="speaker-text-mode">
-                <option value="prefix">Text prefix only ("Krzysztof: …")</option>
-                <option value="field">Only the "speaker" field in the Wyoming event (plain text)</option>
-                <option value="both">Text prefix and the "speaker" field</option>
+                <option value="prefix" data-i18n="optionPrefix">Text prefix only ("Krzysztof: …")</option>
+                <option value="field" data-i18n="optionField">Only the "speaker" field in the Wyoming event (plain text)</option>
+                <option value="both" data-i18n="optionBoth">Text prefix and the "speaker" field</option>
             </select>
-            <div class="hint">How the Home Assistant pipeline receives information about who is speaking.
+            <div class="hint" data-i18n="settingsHint">How the Home Assistant pipeline receives information about who is speaking.
                 Changes take effect from the next transcription (no restart needed).</div>
             <div class="button-row" style="margin-top: 0.5rem;">
-                <button id="save-settings-button" type="button">Save settings</button>
+                <button id="save-settings-button" type="button" data-i18n="saveSettings">Save settings</button>
             </div>
             <div id="settings-status" class="hint"></div>
         </div>
         <div class="form-row">
-            <label>Voice Backup</label>
+            <label data-i18n="backupLabel">Voice Backup</label>
             <div class="button-row">
-                <button id="export-button" class="button-secondary" type="button">Download backup (tar.gz)</button>
-                <label class="button button-secondary">Restore from backup
+                <button id="export-button" class="button-secondary" type="button" data-i18n="exportBackup">Download backup (tar.gz)</button>
+                <label class="button button-secondary"><span data-i18n="importBackup">Restore from backup</span>
                     <input id="import-file" type="file" accept=".tar.gz,.tgz,application/gzip" style="display: none;">
                 </label>
             </div>
-            <div class="hint">The backup includes people, voice samples, roles and settings
+            <div class="hint" data-i18n="backupHint">The backup includes people, voice samples, roles and settings
                 (excluding the unrecognized-voice buffer and the log). Restoring overwrites existing files.</div>
             <div id="backup-status" class="hint"></div>
         </div>
         <div class="form-row">
             <label for="api-token">API token</label>
             <input id="api-token" type="password" autocomplete="off"
-                   placeholder="Only needed when the server has API_TOKEN set">
-            <div class="hint">Stored locally in this browser; sent as the
+                   placeholder="Only needed when the server has API_TOKEN set" data-i18n-placeholder="apiTokenPlaceholder">
+            <div class="hint" data-i18n="apiTokenHint">Stored locally in this browser; sent as the
                 <code>X-API-Token</code> header with every API request.</div>
         </div>
     </div>
 
     <div class="card">
-        <h2>Supported Languages</h2>
+        <h2 data-i18n="supportedLanguagesTitle">Supported Languages</h2>
         <div>__SUPPORTED_LANGUAGE_BADGES__</div>
     </div>
 
     <div class="card">
-        <h2>Compatibility Notes</h2>
+        <h2 data-i18n="compatibilityTitle">Compatibility Notes</h2>
         <ul>__COMPATIBILITY_NOTES__</ul>
     </div>
 
     <div class="card">
-        <h2>API Endpoints</h2>
-        <p><code>POST /inference</code> — whisper.cpp compatible</p>
-        <p><code>POST /v1/audio/transcriptions</code> — OpenAI compatible</p>
-        <p><code>POST /load</code> — hot-reload model</p>
-        <p><code>GET /health</code> — readiness and liveness check</p>
+        <h2 data-i18n="apiEndpointsTitle">API Endpoints</h2>
+        <p data-i18n="endpointInference"><code>POST /inference</code> — whisper.cpp compatible</p>
+        <p data-i18n="endpointTranscriptions"><code>POST /v1/audio/transcriptions</code> — OpenAI compatible</p>
+        <p data-i18n="endpointHealth"><code>GET /health</code> — readiness and liveness check</p>
     </div>
 
     <div class="card">
-        <h2>Example (curl)</h2>
+        <h2 data-i18n="exampleTitle">Example (curl)</h2>
         <pre><code>curl http://127.0.0.1:8580/inference \
   -H "Content-Type: multipart/form-data" \
   -F file="@audio.wav" \
@@ -340,6 +339,261 @@
     </div>
 </div>
 <script>
+const I18N = {
+    en: {
+        tagline: "whisper.cpp-compatible management API with speaker identification",
+        statusRunning: "● Running",
+        quickTitle: "Quick Transcription",
+        asrUnavailable: "The ASR model is not loaded in this process (enrollment-only mode), so HTTP transcription is unavailable here. Speech-to-text for Home Assistant runs in the Wyoming server on port <code>10300</code>.",
+        uploadAudioLabel: "Upload Audio",
+        uploadAudioHint: "Choose an existing audio file from your device.",
+        recordVoice: "Record Voice",
+        clearRecording: "Clear Recording",
+        noRecordingYet: "No recording captured yet.",
+        micUsageHint: "Microphone recording usually works on localhost or over HTTPS. On plain HTTP in LAN mode, some browsers may block microphone access.",
+        languageLabel: "Language",
+        languageHint: "Language is a hint for the model. Clear audio may still transcribe correctly even if a different language is selected.",
+        noSourceSelected: "Active source: none selected.",
+        activeSource: "Active source: {label}",
+        transcribe: "Transcribe",
+        resultLabel: "Result",
+        chooseAndTranscribe: "Choose an audio file and click Transcribe.",
+        unavailableInProcess: "Transcription is unavailable in this process.",
+        micRecordingLabel: "microphone recording",
+        stopRecording: "Stop Recording",
+        finishingRecording: "Finishing recording...",
+        micNotSupported: "Microphone recording is not supported in this browser.",
+        recordingReady: "Recording captured and ready for transcription.",
+        recordingEmpty: "Recording did not capture any audio.",
+        recordingInProgress: "Recording in progress...",
+        micFailed: "Microphone access failed: {message}",
+        chooseFirst: "Please choose an audio file or record your voice first.",
+        transcribing: "Transcribing...",
+        processingAudio: "Processing audio...",
+        transcriptionFailed: "Transcription failed",
+        errorPrefix: "Error: {message}",
+        speakersTitle: "Speakers — Voice Recognition",
+        speakersHint: "Define people and record/upload voice samples. The longer and cleaner the sample (10–30 s recommended), the more reliable the recognition. Changes are picked up by the engine immediately.",
+        newSpeakerPlaceholder: "New person's name",
+        addPerson: "Add person",
+        pendingTitle: "Unrecognized Voices",
+        pendingHint: "Utterances whose voice did not match any known person wait here (grouped: one group = the same voice). Listen, check who is speaking and assign to a person — by default the whole group is assigned, so the profile immediately gets several samples. The same recordings can be assigned by the LLM pipeline via <code>utterance_id</code> from the transcription event.",
+        historyTitle: "Recognition Log",
+        historyHint: "Recent transcriptions with the identification decision (who + confidence). Helps you judge whether the recognition thresholds are well tuned and catch mistakes.",
+        refresh: "Refresh",
+        settingsTitle: "Settings",
+        speakerTextModeLabel: "Speaker identity delivery",
+        optionPrefix: 'Text prefix only ("Krzysztof: …")',
+        optionField: 'Only the "speaker" field in the Wyoming event (plain text)',
+        optionBoth: 'Text prefix and the "speaker" field',
+        settingsHint: "How the Home Assistant pipeline receives information about who is speaking. Changes take effect from the next transcription (no restart needed).",
+        saveSettings: "Save settings",
+        backupLabel: "Voice Backup",
+        exportBackup: "Download backup (tar.gz)",
+        importBackup: "Restore from backup",
+        backupHint: "The backup includes people, voice samples, roles and settings (excluding the unrecognized-voice buffer and the log). Restoring overwrites existing files.",
+        apiTokenPlaceholder: "Only needed when the server has API_TOKEN set",
+        apiTokenHint: "Stored locally in this browser; sent as the <code>X-API-Token</code> header with every API request.",
+        supportedLanguagesTitle: "Supported Languages",
+        compatibilityTitle: "Compatibility Notes",
+        apiEndpointsTitle: "API Endpoints",
+        endpointInference: "<code>POST /inference</code> — whisper.cpp compatible",
+        endpointTranscriptions: "<code>POST /v1/audio/transcriptions</code> — OpenAI compatible",
+        endpointHealth: "<code>GET /health</code> — readiness and liveness check",
+        exampleTitle: "Example (curl)",
+        requestFailed: "Request failed ({status})",
+        play: "▶ Play",
+        playError: "Error ({message})",
+        loadFailed: "Failed to load: {message}",
+        none: "none",
+        recognitionEnabled: "Recognition enabled (threshold {threshold}). People with samples: {enrolled}.",
+        recognitionDisabled: "Recognition disabled (SPEAKER_ID_ENABLED=false). People with samples: {enrolled}.",
+        noSpeakers: "No people defined yet. Add the first one above.",
+        speakerMeta: "{count} samples · {seconds} s total",
+        roleTitle: "Role passed in speaker_role — the pipeline/LLM decides what is allowed.",
+        roleOption: "role: {role}",
+        roleSet: 'Role for "{name}" set to {role}.',
+        roleChangeFailed: "Failed to change role: {message}",
+        record: "Record",
+        uploadFile: "Upload file",
+        deletePerson: "Delete person",
+        confirmDeletePerson: 'Delete person "{name}" along with all their samples?',
+        deleteFailed: "Failed to delete: {message}",
+        noSamples: "No samples for this person.",
+        delete: "Delete",
+        deleteSampleFailed: "Failed to delete sample: {message}",
+        enterName: "Enter a person's name.",
+        addFailed: "Failed to add: {message}",
+        uploadingSample: "Uploading sample for {name}...",
+        uploadFailed: "Upload failed: {message}",
+        stop: "Stop",
+        recordingFor: 'Recording for {name}... click "Stop" to save.',
+        pendingCount: "{count} recordings in {groups} groups (group = same voice).",
+        pendingEmpty: "No pending recordings — all voices recognized or the buffer is empty.",
+        newPersonOption: "+ new person…",
+        newPersonPrompt: "New person's name:",
+        claimed: 'Assigned {count} recordings to "{name}".',
+        claimFailed: "Failed to assign: {message}",
+        unknownVoice: "Unknown voice",
+        recordingSingular: "recording",
+        recordingPlural: "recordings",
+        assignGroup: "Assign group",
+        clipText: ' · "{text}"',
+        onlyThisOne: "Only this one",
+        historyEmpty: "No entries yet — the log fills up with each transcription.",
+        historySummary: "{total} recent transcriptions · recognized: {recognized} · unknown: {unknown}",
+        unknown: "unknown",
+        historyEntry: '{when} · {who} · "{text}"',
+        preparingBackup: "Preparing backup...",
+        backupDownloaded: "Backup downloaded.",
+        exportFailed: "Export failed: {message}",
+        confirmRestore: "Restore backup? Existing files with the same names will be overwritten.",
+        restored: "Restored {count} files.",
+        importFailed: "Import failed: {message}",
+        loadSettingsFailed: "Failed to load settings: {message}",
+        settingsSaved: "Saved — takes effect from the next transcription.",
+        saveFailed: "Failed to save: {message}",
+    },
+    pl: {
+        tagline: "API zarządzania zgodne z whisper.cpp, z identyfikacją mówców",
+        statusRunning: "● Działa",
+        quickTitle: "Szybka transkrypcja",
+        asrUnavailable: "Model ASR nie jest załadowany w tym procesie (tryb tylko do zarządzania głosami), więc transkrypcja przez HTTP jest tu niedostępna. Zamiana mowy na tekst dla Home Assistant działa w serwerze Wyoming na porcie <code>10300</code>.",
+        uploadAudioLabel: "Wgraj audio",
+        uploadAudioHint: "Wybierz istniejący plik audio ze swojego urządzenia.",
+        recordVoice: "Nagraj głos",
+        clearRecording: "Wyczyść nagranie",
+        noRecordingYet: "Brak zarejestrowanego nagrania.",
+        micUsageHint: "Nagrywanie z mikrofonu zwykle działa na localhost lub po HTTPS. Przy zwykłym HTTP w sieci lokalnej niektóre przeglądarki mogą blokować dostęp do mikrofonu.",
+        languageLabel: "Język",
+        languageHint: "Język jest podpowiedzią dla modelu. Czyste nagranie może zostać poprawnie przetranskrybowane, nawet jeśli wybrano inny język.",
+        noSourceSelected: "Aktywne źródło: nie wybrano.",
+        activeSource: "Aktywne źródło: {label}",
+        transcribe: "Transkrybuj",
+        resultLabel: "Wynik",
+        chooseAndTranscribe: "Wybierz plik audio i kliknij Transkrybuj.",
+        unavailableInProcess: "Transkrypcja jest niedostępna w tym procesie.",
+        micRecordingLabel: "nagranie z mikrofonu",
+        stopRecording: "Zatrzymaj nagrywanie",
+        finishingRecording: "Kończenie nagrywania...",
+        micNotSupported: "Nagrywanie z mikrofonu nie jest wspierane w tej przeglądarce.",
+        recordingReady: "Nagranie zarejestrowane i gotowe do transkrypcji.",
+        recordingEmpty: "Nagranie nie zarejestrowało żadnego dźwięku.",
+        recordingInProgress: "Trwa nagrywanie...",
+        micFailed: "Brak dostępu do mikrofonu: {message}",
+        chooseFirst: "Najpierw wybierz plik audio albo nagraj swój głos.",
+        transcribing: "Transkrybowanie...",
+        processingAudio: "Przetwarzanie audio...",
+        transcriptionFailed: "Transkrypcja nie powiodła się",
+        errorPrefix: "Błąd: {message}",
+        speakersTitle: "Mówcy — rozpoznawanie głosu",
+        speakersHint: "Zdefiniuj osoby i nagraj/wgraj próbki głosu. Im dłuższa i czystsza próbka (zalecane 10–30 s), tym pewniejsze rozpoznawanie. Zmiany są od razu widoczne dla silnika.",
+        newSpeakerPlaceholder: "Imię nowej osoby",
+        addPerson: "Dodaj osobę",
+        pendingTitle: "Nierozpoznane głosy",
+        pendingHint: "Wypowiedzi, których głos nie pasował do żadnej osoby, czekają tutaj (pogrupowane: jedna grupa = ten sam głos). Odsłuchaj, sprawdź kto mówi i przypisz do osoby — domyślnie przypisywana jest cała grupa, więc profil od razu dostaje kilka próbek. Te same nagrania może przypisywać pipeline LLM przez <code>utterance_id</code> z eventu transkrypcji.",
+        historyTitle: "Dziennik rozpoznań",
+        historyHint: "Ostatnie transkrypcje z decyzją identyfikacji (kto + pewność). Pozwala ocenić, czy progi rozpoznawania są dobrze dobrane, i wychwycić pomyłki.",
+        refresh: "Odśwież",
+        settingsTitle: "Ustawienia",
+        speakerTextModeLabel: "Przekazywanie tożsamości mówcy",
+        optionPrefix: "Tylko prefiks w tekście („Krzysztof: …”)",
+        optionField: "Tylko pole „speaker” w evencie Wyoming (czysty tekst)",
+        optionBoth: "Prefiks w tekście i pole „speaker”",
+        settingsHint: "Jak pipeline Home Assistant dostaje informację o tym, kto mówi. Zmiana obowiązuje od następnej transkrypcji (bez restartu).",
+        saveSettings: "Zapisz ustawienia",
+        backupLabel: "Kopia zapasowa głosów",
+        exportBackup: "Pobierz kopię (tar.gz)",
+        importBackup: "Przywróć z kopii",
+        backupHint: "Kopia obejmuje osoby, próbki głosu, role i ustawienia (bez bufora nierozpoznanych i dziennika). Przywrócenie nadpisuje istniejące pliki.",
+        apiTokenPlaceholder: "Potrzebny tylko, gdy serwer ma ustawione API_TOKEN",
+        apiTokenHint: "Przechowywany lokalnie w tej przeglądarce; wysyłany jako nagłówek <code>X-API-Token</code> przy każdym żądaniu API.",
+        supportedLanguagesTitle: "Obsługiwane języki",
+        compatibilityTitle: "Uwagi o zgodności",
+        apiEndpointsTitle: "Endpointy API",
+        endpointInference: "<code>POST /inference</code> — zgodny z whisper.cpp",
+        endpointTranscriptions: "<code>POST /v1/audio/transcriptions</code> — zgodny z OpenAI",
+        endpointHealth: "<code>GET /health</code> — sprawdzanie gotowości i działania",
+        exampleTitle: "Przykład (curl)",
+        requestFailed: "Żądanie nie powiodło się ({status})",
+        play: "▶ Odtwórz",
+        playError: "Błąd ({message})",
+        loadFailed: "Błąd wczytywania: {message}",
+        none: "brak",
+        recognitionEnabled: "Rozpoznawanie włączone (próg {threshold}). Osoby z próbkami: {enrolled}.",
+        recognitionDisabled: "Rozpoznawanie wyłączone (SPEAKER_ID_ENABLED=false). Osoby z próbkami: {enrolled}.",
+        noSpeakers: "Brak zdefiniowanych osób. Dodaj pierwszą powyżej.",
+        speakerMeta: "{count} próbek · {seconds} s łącznie",
+        roleTitle: "Rola przekazywana w speaker_role — pipeline/LLM decyduje, co wolno.",
+        roleOption: "rola: {role}",
+        roleSet: "Rola „{name}” ustawiona na {role}.",
+        roleChangeFailed: "Nie udało się zmienić roli: {message}",
+        record: "Nagraj",
+        uploadFile: "Wgraj plik",
+        deletePerson: "Usuń osobę",
+        confirmDeletePerson: 'Usunąć osobę "{name}" wraz ze wszystkimi próbkami?',
+        deleteFailed: "Nie udało się usunąć: {message}",
+        noSamples: "Brak próbek dla tej osoby.",
+        delete: "Usuń",
+        deleteSampleFailed: "Nie udało się usunąć próbki: {message}",
+        enterName: "Podaj imię osoby.",
+        addFailed: "Nie udało się dodać: {message}",
+        uploadingSample: "Wgrywanie próbki dla {name}...",
+        uploadFailed: "Nie udało się wgrać: {message}",
+        stop: "Zatrzymaj",
+        recordingFor: "Nagrywanie dla {name}... kliknij „Zatrzymaj”, by zapisać.",
+        pendingCount: "{count} nagrań w {groups} grupach (grupa = ten sam głos).",
+        pendingEmpty: "Brak oczekujących nagrań — wszystkie głosy rozpoznane lub bufor pusty.",
+        newPersonOption: "+ nowa osoba…",
+        newPersonPrompt: "Imię nowej osoby:",
+        claimed: "Przypisano {count} nagrań do „{name}”.",
+        claimFailed: "Nie udało się przypisać: {message}",
+        unknownVoice: "Nieznany głos",
+        recordingSingular: "nagranie",
+        recordingPlural: "nagrań",
+        assignGroup: "Przypisz grupę",
+        clipText: " · „{text}”",
+        onlyThisOne: "Tylko to",
+        historyEmpty: "Brak wpisów — dziennik wypełnia się z każdą transkrypcją.",
+        historySummary: "{total} ostatnich transkrypcji · rozpoznane: {recognized} · nieznane: {unknown}",
+        unknown: "nieznany",
+        historyEntry: "{when} · {who} · „{text}”",
+        preparingBackup: "Przygotowywanie kopii...",
+        backupDownloaded: "Kopia pobrana.",
+        exportFailed: "Błąd eksportu: {message}",
+        confirmRestore: "Przywrócić kopię? Istniejące pliki o tych samych nazwach zostaną nadpisane.",
+        restored: "Przywrócono {count} plików.",
+        importFailed: "Błąd importu: {message}",
+        loadSettingsFailed: "Błąd wczytywania ustawień: {message}",
+        settingsSaved: "Zapisano — obowiązuje od następnej transkrypcji.",
+        saveFailed: "Błąd zapisu: {message}",
+    },
+};
+
+const LANG = (navigator.language || "en").toLowerCase().startsWith("pl") ? "pl" : "en";
+
+function t(key, vars) {
+    const dict = I18N[LANG] || I18N.en;
+    let text = Object.prototype.hasOwnProperty.call(dict, key) ? dict[key] : I18N.en[key];
+    if (text == null) return key;
+    if (vars) {
+        for (const name of Object.keys(vars)) {
+            text = text.split(`{${name}}`).join(String(vars[name]));
+        }
+    }
+    return text;
+}
+
+// Apply translations to the static (server-rendered) markup. The scripts sit
+// at the end of <body>, so the DOM is already available here.
+document.documentElement.lang = LANG;
+for (const el of document.querySelectorAll("[data-i18n]")) {
+    el.innerHTML = t(el.getAttribute("data-i18n"));
+}
+for (const el of document.querySelectorAll("[data-i18n-placeholder]")) {
+    el.placeholder = t(el.getAttribute("data-i18n-placeholder"));
+}
+
 const form = document.getElementById("transcribe-form");
 const submitButton = document.getElementById("submit-button");
 const result = document.getElementById("transcription-result");
@@ -360,7 +614,7 @@ const ASR_AVAILABLE = __ASR_AVAILABLE__;
 if (!ASR_AVAILABLE) {
     document.getElementById("asr-unavailable").style.display = "block";
     submitButton.disabled = true;
-    result.querySelector("code").textContent = "Transcription is unavailable in this process.";
+    result.querySelector("code").textContent = t("unavailableInProcess");
 }
 
 function detectRecordingMimeType() {
@@ -383,7 +637,7 @@ function getSelectedAudio() {
             file: new File([recordedBlob], "recording.webm", {
                 type: recordedBlob.type || "audio/webm",
             }),
-            label: "microphone recording",
+            label: t("micRecordingLabel"),
         };
     }
 
@@ -401,11 +655,11 @@ function updateSourceSummary() {
     const selectedAudio = getSelectedAudio();
 
     if (!selectedAudio) {
-        sourceSummary.textContent = "Active source: none selected.";
+        sourceSummary.textContent = t("noSourceSelected");
         return;
     }
 
-    sourceSummary.textContent = `Active source: ${selectedAudio.label}`;
+    sourceSummary.textContent = t("activeSource", { label: selectedAudio.label });
 }
 
 function resetRecordingState(message) {
@@ -438,7 +692,7 @@ fileInput.addEventListener("change", () => {
         recordedBlob = null;
         recordedChunks = [];
         clearRecordingButton.disabled = true;
-        recordingStatus.textContent = "No recording captured yet.";
+        recordingStatus.textContent = t("noRecordingYet");
     }
 
     updateSourceSummary();
@@ -446,20 +700,20 @@ fileInput.addEventListener("change", () => {
 
 clearRecordingButton.addEventListener("click", () => {
     fileInput.value = "";
-    resetRecordingState("No recording captured yet.");
+    resetRecordingState(t("noRecordingYet"));
 });
 
 recordButton.addEventListener("click", async () => {
     if (mediaRecorder && mediaRecorder.state === "recording") {
         mediaRecorder.stop();
-        recordButton.textContent = "Record Voice";
+        recordButton.textContent = t("recordVoice");
         recordButton.classList.remove("button-danger");
-        recordingStatus.textContent = "Finishing recording...";
+        recordingStatus.textContent = t("finishingRecording");
         return;
     }
 
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === "undefined") {
-        recordingStatus.textContent = "Microphone recording is not supported in this browser.";
+        recordingStatus.textContent = t("micNotSupported");
         return;
     }
 
@@ -483,23 +737,23 @@ recordButton.addEventListener("click", async () => {
         mediaRecorder.addEventListener("stop", () => {
             const blobType = mimeType || "audio/webm";
             recordedBlob = recordedChunks.length ? new Blob(recordedChunks, { type: blobType }) : null;
-            recordButton.textContent = "Record Voice";
+            recordButton.textContent = t("recordVoice");
             recordButton.classList.remove("button-danger");
             clearRecordingButton.disabled = !recordedBlob;
             recordingStatus.textContent = recordedBlob
-                ? "Recording captured and ready for transcription."
-                : "Recording did not capture any audio.";
+                ? t("recordingReady")
+                : t("recordingEmpty");
             updateSourceSummary();
             stopStream();
         });
 
         mediaRecorder.start();
-        recordButton.textContent = "Stop Recording";
+        recordButton.textContent = t("stopRecording");
         recordButton.classList.add("button-danger");
-        recordingStatus.innerHTML = '<span class="recording-live">Recording in progress...</span>';
+        recordingStatus.innerHTML = `<span class="recording-live">${t("recordingInProgress")}</span>`;
     } catch (error) {
         stopStream();
-        recordingStatus.textContent = `Microphone access failed: ${error.message}`;
+        recordingStatus.textContent = t("micFailed", { message: error.message });
     }
 });
 
@@ -509,7 +763,7 @@ form.addEventListener("submit", async (event) => {
     const selectedAudio = getSelectedAudio();
 
     if (!selectedAudio) {
-        result.textContent = "Please choose an audio file or record your voice first.";
+        result.textContent = t("chooseFirst");
         return;
     }
 
@@ -520,8 +774,8 @@ form.addEventListener("submit", async (event) => {
     formData.append("temperature", "0.0");
 
     setBusyState(true);
-    submitButton.textContent = "Transcribing...";
-    result.textContent = "Processing audio...";
+    submitButton.textContent = t("transcribing");
+    result.textContent = t("processingAudio");
 
     try {
         const response = await fetch("/inference", {
@@ -532,15 +786,15 @@ form.addEventListener("submit", async (event) => {
         const payload = await response.json();
 
         if (!response.ok) {
-            throw new Error(payload.detail || "Transcription failed");
+            throw new Error(payload.detail || t("transcriptionFailed"));
         }
 
         result.textContent = payload.text || "";
     } catch (error) {
-        result.textContent = `Error: ${error.message}`;
+        result.textContent = t("errorPrefix", { message: error.message });
     } finally {
         setBusyState(false);
-        submitButton.textContent = "Transcribe";
+        submitButton.textContent = t("transcribe");
     }
 });
 
@@ -579,7 +833,7 @@ async function apiRequest(url, options) {
     let payload = {};
     try { payload = await response.json(); } catch (e) { /* file or empty */ }
     if (!response.ok) {
-        throw new Error(payload.detail || `Request failed (${response.status})`);
+        throw new Error(payload.detail || t("requestFailed", { status: response.status }));
     }
     return payload;
 }
@@ -594,7 +848,7 @@ async function loadSpeakers() {
         knownRoles = data.roles || knownRoles;
         renderSpeakers(data.speakers || [], data.speaker_id || {});
     } catch (error) {
-        setSpeakersStatus(`Failed to load: ${error.message}`, true);
+        setSpeakersStatus(t("loadFailed", { message: error.message }), true);
     }
 }
 
@@ -605,7 +859,7 @@ function renderAudioPlayer(url) {
     const button = document.createElement("button");
     button.className = "button-secondary btn-small";
     button.type = "button";
-    button.textContent = "▶ Play";
+    button.textContent = t("play");
     button.addEventListener("click", async () => {
         button.disabled = true;
         try {
@@ -619,7 +873,7 @@ function renderAudioPlayer(url) {
             wrapper.replaceChildren(audio);
         } catch (error) {
             button.disabled = false;
-            button.textContent = `Error (${error.message})`;
+            button.textContent = t("playError", { message: error.message });
         }
     });
     wrapper.appendChild(button);
@@ -628,11 +882,11 @@ function renderAudioPlayer(url) {
 
 function renderSpeakers(speakers, status) {
     const enabled = status.enabled;
-    const enrolled = (status.enrolled || []).join(", ") || "none";
+    const enrolled = (status.enrolled || []).join(", ") || t("none");
     setSpeakersStatus(
         enabled
-            ? `Recognition enabled (threshold ${status.threshold}). People with samples: ${enrolled}.`
-            : `Recognition disabled (SPEAKER_ID_ENABLED=false). People with samples: ${enrolled}.`,
+            ? t("recognitionEnabled", { threshold: status.threshold, enrolled })
+            : t("recognitionDisabled", { enrolled }),
         false
     );
 
@@ -640,7 +894,7 @@ function renderSpeakers(speakers, status) {
     if (!speakers.length) {
         const empty = document.createElement("div");
         empty.className = "empty-hint";
-        empty.textContent = "No people defined yet. Add the first one above.";
+        empty.textContent = t("noSpeakers");
         speakersList.appendChild(empty);
         return;
     }
@@ -661,18 +915,18 @@ function renderSpeakerCard(speaker) {
     const title = document.createElement("div");
     title.innerHTML =
         `<span class="speaker-name">${escapeHtml(speaker.name)}</span>` +
-        `<div class="speaker-meta">${speaker.samples.length} samples · ${totalSeconds.toFixed(1)} s total</div>`;
+        `<div class="speaker-meta">${t("speakerMeta", { count: speaker.samples.length, seconds: totalSeconds.toFixed(1) })}</div>`;
     head.appendChild(title);
 
     const actions = document.createElement("div");
     actions.className = "button-row";
 
     const roleSelect = document.createElement("select");
-    roleSelect.title = "Role passed in speaker_role — the pipeline/LLM decides what is allowed.";
+    roleSelect.title = t("roleTitle");
     for (const role of knownRoles) {
         const option = document.createElement("option");
         option.value = role;
-        option.textContent = `role: ${role}`;
+        option.textContent = t("roleOption", { role });
         roleSelect.appendChild(option);
     }
     roleSelect.value = speaker.role || "user";
@@ -684,9 +938,9 @@ function renderSpeakerCard(speaker) {
                 method: "POST",
                 body: form,
             });
-            setSpeakersStatus(`Role for "${speaker.name}" set to ${roleSelect.value}.`, false);
+            setSpeakersStatus(t("roleSet", { name: speaker.name, role: roleSelect.value }), false);
         } catch (error) {
-            setSpeakersStatus(`Failed to change role: ${error.message}`, true);
+            setSpeakersStatus(t("roleChangeFailed", { message: error.message }), true);
         }
     });
     actions.appendChild(roleSelect);
@@ -694,12 +948,12 @@ function renderSpeakerCard(speaker) {
     const recordBtn = document.createElement("button");
     recordBtn.className = "button-secondary btn-small";
     recordBtn.type = "button";
-    recordBtn.textContent = "Record";
+    recordBtn.textContent = t("record");
     recordBtn.addEventListener("click", () => toggleSpeakerRecording(speaker.name, recordBtn));
 
     const uploadLabel = document.createElement("label");
     uploadLabel.className = "button button-secondary btn-small";
-    uploadLabel.textContent = "Upload file";
+    uploadLabel.textContent = t("uploadFile");
     const uploadInput = document.createElement("input");
     uploadInput.type = "file";
     uploadInput.accept = "audio/*";
@@ -714,7 +968,7 @@ function renderSpeakerCard(speaker) {
     const deleteBtn = document.createElement("button");
     deleteBtn.className = "button-danger btn-small";
     deleteBtn.type = "button";
-    deleteBtn.textContent = "Delete person";
+    deleteBtn.textContent = t("deletePerson");
     deleteBtn.addEventListener("click", () => deleteSpeaker(speaker.name));
 
     actions.appendChild(recordBtn);
@@ -726,7 +980,7 @@ function renderSpeakerCard(speaker) {
     if (!speaker.samples.length) {
         const empty = document.createElement("div");
         empty.className = "empty-hint";
-        empty.textContent = "No samples for this person.";
+        empty.textContent = t("noSamples");
         card.appendChild(empty);
     }
 
@@ -754,7 +1008,7 @@ function renderSampleRow(speakerName, sample) {
     const del = document.createElement("button");
     del.className = "button-danger btn-small";
     del.type = "button";
-    del.textContent = "Delete";
+    del.textContent = t("delete");
     del.addEventListener("click", () => deleteSample(speakerName, sample.id));
 
     row.appendChild(audio);
@@ -773,7 +1027,7 @@ function escapeHtml(value) {
 async function addSpeaker() {
     const name = newSpeakerName.value.trim();
     if (!name) {
-        setSpeakersStatus("Enter a person's name.", true);
+        setSpeakersStatus(t("enterName"), true);
         return;
     }
     const form = new FormData();
@@ -783,17 +1037,17 @@ async function addSpeaker() {
         newSpeakerName.value = "";
         await loadSpeakers();
     } catch (error) {
-        setSpeakersStatus(`Failed to add: ${error.message}`, true);
+        setSpeakersStatus(t("addFailed", { message: error.message }), true);
     }
 }
 
 async function deleteSpeaker(name) {
-    if (!confirm(`Delete person "${name}" along with all their samples?`)) return;
+    if (!confirm(t("confirmDeletePerson", { name }))) return;
     try {
         await apiRequest(`/speakers/${encodeURIComponent(name)}`, { method: "DELETE" });
         await loadSpeakers();
     } catch (error) {
-        setSpeakersStatus(`Failed to delete: ${error.message}`, true);
+        setSpeakersStatus(t("deleteFailed", { message: error.message }), true);
     }
 }
 
@@ -805,14 +1059,14 @@ async function deleteSample(name, sampleId) {
         );
         await loadSpeakers();
     } catch (error) {
-        setSpeakersStatus(`Failed to delete sample: ${error.message}`, true);
+        setSpeakersStatus(t("deleteSampleFailed", { message: error.message }), true);
     }
 }
 
 async function uploadSample(name, file) {
     const form = new FormData();
     form.append("file", file);
-    setSpeakersStatus(`Uploading sample for ${name}...`, false);
+    setSpeakersStatus(t("uploadingSample", { name }), false);
     try {
         await apiRequest(`/speakers/${encodeURIComponent(name)}/samples`, {
             method: "POST",
@@ -820,19 +1074,19 @@ async function uploadSample(name, file) {
         });
         await loadSpeakers();
     } catch (error) {
-        setSpeakersStatus(`Upload failed: ${error.message}`, true);
+        setSpeakersStatus(t("uploadFailed", { message: error.message }), true);
     }
 }
 
 async function toggleSpeakerRecording(name, button) {
     if (speakerRecorder && speakerRecorder.state === "recording") {
         speakerRecorder.stop();
-        button.textContent = "Record";
+        button.textContent = t("record");
         button.classList.remove("button-danger");
         return;
     }
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === "undefined") {
-        setSpeakersStatus("Microphone recording is not supported in this browser.", true);
+        setSpeakersStatus(t("micNotSupported"), true);
         return;
     }
     try {
@@ -851,11 +1105,11 @@ async function toggleSpeakerRecording(name, button) {
             }
         });
         speakerRecorder.start();
-        button.textContent = "Stop";
+        button.textContent = t("stop");
         button.classList.add("button-danger");
-        setSpeakersStatus(`Recording for ${name}... click "Stop" to save.`, false);
+        setSpeakersStatus(t("recordingFor", { name }), false);
     } catch (error) {
-        setSpeakersStatus(`Microphone access failed: ${error.message}`, true);
+        setSpeakersStatus(t("micFailed", { message: error.message }), true);
     }
 }
 
@@ -867,7 +1121,7 @@ async function loadPending() {
         const data = await apiRequest("/pending");
         renderPending(data.clusters || []);
     } catch (error) {
-        pendingStatus.textContent = `Failed to load: ${error.message}`;
+        pendingStatus.textContent = t("loadFailed", { message: error.message });
     }
 }
 
@@ -875,8 +1129,8 @@ function renderPending(clusters) {
     pendingList.innerHTML = "";
     const count = clusters.reduce((total, cluster) => total + cluster.clips.length, 0);
     pendingStatus.textContent = count
-        ? `${count} recordings in ${clusters.length} groups (group = same voice).`
-        : "No pending recordings — all voices recognized or the buffer is empty.";
+        ? t("pendingCount", { count, groups: clusters.length })
+        : t("pendingEmpty");
     for (const cluster of clusters) {
         pendingList.appendChild(renderPendingCluster(cluster));
     }
@@ -892,14 +1146,14 @@ function assignTargetControls() {
     }
     const newOption = document.createElement("option");
     newOption.value = "__new__";
-    newOption.textContent = "+ new person…";
+    newOption.textContent = t("newPersonOption");
     select.appendChild(newOption);
     return select;
 }
 
 function resolveAssignTarget(select) {
     if (select.value === "__new__") {
-        const name = prompt("New person's name:");
+        const name = prompt(t("newPersonPrompt"));
         return name && name.trim() ? name.trim() : null;
     }
     return select.value || null;
@@ -914,9 +1168,9 @@ async function claimUtterance(name, utteranceId, includeCluster) {
             { method: "POST", body: form }
         );
         pendingStatus.textContent =
-            `Assigned ${result.claimed.length} recordings to "${name}".`;
+            t("claimed", { count: result.claimed.length, name });
     } catch (error) {
-        pendingStatus.textContent = `Failed to assign: ${error.message}`;
+        pendingStatus.textContent = t("claimFailed", { message: error.message });
     }
     await loadPending();
     await loadSpeakers();
@@ -933,8 +1187,8 @@ function renderPendingCluster(cluster) {
     const title = document.createElement("div");
     const clipCount = cluster.clips.length;
     title.innerHTML =
-        `<span class="speaker-name">Unknown voice</span>` +
-        `<div class="speaker-meta">${clipCount} ${clipCount === 1 ? "recording" : "recordings"}</div>`;
+        `<span class="speaker-name">${t("unknownVoice")}</span>` +
+        `<div class="speaker-meta">${clipCount} ${clipCount === 1 ? t("recordingSingular") : t("recordingPlural")}</div>`;
     head.appendChild(title);
 
     const actions = document.createElement("div");
@@ -943,7 +1197,7 @@ function renderPendingCluster(cluster) {
     const assignAll = document.createElement("button");
     assignAll.className = "btn-small";
     assignAll.type = "button";
-    assignAll.textContent = "Assign group";
+    assignAll.textContent = t("assignGroup");
     assignAll.addEventListener("click", () => {
         const name = resolveAssignTarget(target);
         if (name) claimUtterance(name, cluster.clips[0].id, true);
@@ -962,7 +1216,7 @@ function renderPendingCluster(cluster) {
         const meta = document.createElement("span");
         meta.className = "sample-meta";
         const when = clip.created ? new Date(clip.created * 1000).toLocaleString() : "";
-        const text = clip.text ? ` · "${clip.text}"` : "";
+        const text = clip.text ? t("clipText", { text: clip.text }) : "";
         meta.textContent = `${(clip.seconds || 0).toFixed(1)} s · ${when}${text}`;
 
         const spacer = document.createElement("div");
@@ -971,7 +1225,7 @@ function renderPendingCluster(cluster) {
         const assignOne = document.createElement("button");
         assignOne.className = "button-secondary btn-small";
         assignOne.type = "button";
-        assignOne.textContent = "Only this one";
+        assignOne.textContent = t("onlyThisOne");
         assignOne.addEventListener("click", () => {
             const name = resolveAssignTarget(target);
             if (name) claimUtterance(name, clip.id, false);
@@ -980,12 +1234,12 @@ function renderPendingCluster(cluster) {
         const remove = document.createElement("button");
         remove.className = "button-danger btn-small";
         remove.type = "button";
-        remove.textContent = "Delete";
+        remove.textContent = t("delete");
         remove.addEventListener("click", async () => {
             try {
                 await apiRequest(`/pending/${encodeURIComponent(clip.id)}`, { method: "DELETE" });
             } catch (error) {
-                pendingStatus.textContent = `Failed to delete: ${error.message}`;
+                pendingStatus.textContent = t("deleteFailed", { message: error.message });
             }
             await loadPending();
         });
@@ -1007,19 +1261,19 @@ async function loadHistory() {
         const data = await apiRequest("/history?limit=50");
         renderHistory(data.entries || []);
     } catch (error) {
-        historyStatus.textContent = `Failed to load: ${error.message}`;
+        historyStatus.textContent = t("loadFailed", { message: error.message });
     }
 }
 
 function renderHistory(entries) {
     historyList.innerHTML = "";
     if (!entries.length) {
-        historyStatus.textContent = "No entries yet — the log fills up with each transcription.";
+        historyStatus.textContent = t("historyEmpty");
         return;
     }
     const recognized = entries.filter((e) => e.speaker).length;
     historyStatus.textContent =
-        `${entries.length} recent transcriptions · recognized: ${recognized} · unknown: ${entries.length - recognized}`;
+        t("historySummary", { total: entries.length, recognized, unknown: entries.length - recognized });
 
     for (const entry of entries) {
         const row = document.createElement("div");
@@ -1028,13 +1282,13 @@ function renderHistory(entries) {
         const meta = document.createElement("span");
         meta.className = "sample-meta";
         const when = entry.ts ? new Date(entry.ts * 1000).toLocaleString() : "";
-        let who = "unknown";
+        let who = t("unknown");
         if (entry.speaker) {
             const score = entry.score != null ? ` (${entry.score.toFixed(2)})` : "";
             const role = entry.role ? ` · ${entry.role}` : "";
             who = `${entry.speaker}${score}${role}`;
         }
-        meta.textContent = `${when} · ${who} · "${entry.text || ""}"`;
+        meta.textContent = t("historyEntry", { when, who, text: entry.text || "" });
 
         const spacer = document.createElement("div");
         spacer.className = "spacer";
@@ -1056,7 +1310,7 @@ const importFile = document.getElementById("import-file");
 const backupStatus = document.getElementById("backup-status");
 
 exportButton.addEventListener("click", async () => {
-    backupStatus.textContent = "Preparing backup...";
+    backupStatus.textContent = t("preparingBackup");
     try {
         const response = await fetch("/export", { headers: authHeaders() });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -1066,15 +1320,15 @@ exportButton.addEventListener("click", async () => {
         link.download = "speakers-backup.tar.gz";
         link.click();
         URL.revokeObjectURL(link.href);
-        backupStatus.textContent = "Backup downloaded.";
+        backupStatus.textContent = t("backupDownloaded");
     } catch (error) {
-        backupStatus.textContent = `Export failed: ${error.message}`;
+        backupStatus.textContent = t("exportFailed", { message: error.message });
     }
 });
 
 importFile.addEventListener("change", async () => {
     if (!importFile.files.length) return;
-    if (!confirm("Restore backup? Existing files with the same names will be overwritten.")) {
+    if (!confirm(t("confirmRestore"))) {
         importFile.value = "";
         return;
     }
@@ -1082,12 +1336,12 @@ importFile.addEventListener("change", async () => {
     form.append("file", importFile.files[0]);
     try {
         const result = await apiRequest("/import", { method: "POST", body: form });
-        backupStatus.textContent = `Restored ${result.files} files.`;
+        backupStatus.textContent = t("restored", { count: result.files });
         await loadSpeakers();
         await loadPending();
         await loadHistory();
     } catch (error) {
-        backupStatus.textContent = `Import failed: ${error.message}`;
+        backupStatus.textContent = t("importFailed", { message: error.message });
     }
     importFile.value = "";
 });
@@ -1118,7 +1372,7 @@ async function loadSettings() {
         }
         settingsStatus.textContent = "";
     } catch (error) {
-        settingsStatus.textContent = `Failed to load settings: ${error.message}`;
+        settingsStatus.textContent = t("loadSettingsFailed", { message: error.message });
     }
 }
 
@@ -1127,9 +1381,9 @@ saveSettingsButton.addEventListener("click", async () => {
     form.append("speaker_text_mode", speakerTextMode.value);
     try {
         await apiRequest("/settings", { method: "POST", body: form });
-        settingsStatus.textContent = "Saved — takes effect from the next transcription.";
+        settingsStatus.textContent = t("settingsSaved");
     } catch (error) {
-        settingsStatus.textContent = `Failed to save: ${error.message}`;
+        settingsStatus.textContent = t("saveFailed", { message: error.message });
     }
 });
 

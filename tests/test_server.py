@@ -50,6 +50,10 @@ def make_upload_file(content: bytes, filename: str = "test.wav") -> FakeUploadFi
 class TranscribeApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self.audio_bytes = make_wav_bytes()
+        self.service_probe = patch.object(
+            server.service, "whispercpp_reachable", return_value=True
+        )
+        self.service_probe.start()
         self.service_vad = patch.object(
             server.service.vad_detector,
             "detect_speech",
@@ -68,6 +72,7 @@ class TranscribeApiTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.service_vad.stop()
+        self.service_probe.stop()
 
 
     def run_async(self, coro):
@@ -462,6 +467,14 @@ class TranscribeApiTests(unittest.TestCase):
         request = SimpleNamespace(headers={})
         payload = self.decode_json_response(self.run_async(server.health(request)))
         self.assertTrue(payload["asr_ready"])
+
+    def test_health_reports_asr_down_when_whispercpp_unreachable(self):
+        request = SimpleNamespace(headers={})
+        with patch.object(server.service, "whispercpp_reachable", return_value=False):
+            payload = self.decode_json_response(self.run_async(server.health(request)))
+        self.assertFalse(payload["asr_ready"])
+        self.assertFalse(payload["ready"])
+        self.assertEqual(payload["status"], "loading")
 
     def test_health_hides_speaker_names_from_unauthenticated_callers(self):
         from fastapi.testclient import TestClient

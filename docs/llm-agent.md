@@ -1,5 +1,10 @@
 # LLM agent recipes ("who are you?" flow and roles)
 
+> **Note:** the literal `Speaker` prefix below must match your deployment's
+> `SPEAKER_LABEL` (the shipped Polish compose sets `SPEAKER_LABEL=Mówca`,
+> so replace `Speaker N:` with `Mówca N:` in every snippet).
+
+
 Detailed recipes for wiring the speaker-identification features into a Home
 Assistant LLM conversation agent.
 
@@ -37,7 +42,7 @@ script:
   sprawdz_nieznany_glos:
     alias: "Check unrecognized voice"
     description: >-
-      Call when an utterance is prefixed "Speaker N:" (or the configured SPEAKER_LABEL) (unknown speaker).
+      Call when an utterance is prefixed "Speaker N:" (unknown speaker).
       Returns should_ask — whether this person is worth asking who they
       are (only "regulars" qualify, not one-off visitors).
     sequence:
@@ -71,7 +76,7 @@ System-prompt snippet (includes the anti-overzealousness rules):
 
 ```text
 Utterances are prefixed with the speaker's name ("Krzysztof: ...") or with
-"Speaker N:" (or the configured SPEAKER_LABEL) when the voice is unrecognized. Rules for "Speaker N:" (or the configured SPEAKER_LABEL):
+"Speaker N:" when the voice is unrecognized. Rules for "Speaker N:":
 1. Handle the request normally first.
 2. Do not ask about identity for short utterances (fewer than ~5 words).
 3. Before asking, call the sprawdz_nieznany_glos tool; ask only when
@@ -109,7 +114,7 @@ role policy in your LLM agent's system prompt, keyed by name:
 
 ```text
 Utterances are prefixed with the speaker's name ("Krzysztof: ...") or with
-"Speaker N:" (or the configured SPEAKER_LABEL) when the voice is unrecognized. Rules:
+"Speaker N:" when the voice is unrecognized. Rules:
 - Krzysztof (admin): full control of the house, including locks, alarm and
   configuration.
 - Anna (user): lights, music and temperature; no locks or alarm.

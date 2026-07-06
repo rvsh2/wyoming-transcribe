@@ -63,7 +63,8 @@ class ModelStatusSensor(WyomingTranscribeSensor):
         health = self.coordinator.data.get("health") or {}
         return {
             "model": health.get("model"),
-            "device": health.get("device"),
+            "backend": health.get("backend"),
+            "whispercpp_url": health.get("whispercpp_url"),
             "ready": health.get("ready"),
             "asr_ready": health.get("asr_ready"),
             "management_status": health.get("status"),

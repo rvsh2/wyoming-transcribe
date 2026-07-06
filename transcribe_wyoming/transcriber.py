@@ -25,6 +25,10 @@ from .vad import SileroVoiceActivityDetector, VadConfig
 
 LOGGER = logging.getLogger("transcribe-wyoming.transcriber")
 
+# How long a whisper.cpp reachability probe result is trusted before the
+# server is probed again (see whispercpp_reachable).
+PROBE_CACHE_SECONDS = 10.0
+
 # Padding kept around the VAD speech span when cropping non-speech audio before
 # generation. Leading/trailing noise makes the diarize model hallucinate
 # (observed on Polish far-field clips: 1.2 s of speech in a 8.9 s clip produced
@@ -165,6 +169,9 @@ class SpeechTranscriber:
         # Serializes inference (and model swaps in load()) so async transports
         # can safely offload transcribe_pcm to worker threads.
         self._inference_lock = threading.Lock()
+        # whisper.cpp reachability probe cache (see whispercpp_reachable).
+        self._probe_ok = False
+        self._probe_checked_at = float("-inf")
         # Consecutive transcription failures, maintained by the Wyoming handler
         # to make persistent breakage visible despite empty-transcript replies.
         self.failure_streak = 0
@@ -202,22 +209,41 @@ class SpeechTranscriber:
         per-request empty transcripts.
         """
         LOGGER.info("Using whisper.cpp server at %s", self.whispercpp_url)
+        if self.whispercpp_reachable(force=True):
+            LOGGER.info("whisper.cpp server is reachable")
+        else:
+            LOGGER.warning(
+                "whisper.cpp server not reachable yet; requests will retry"
+            )
+
+    def whispercpp_reachable(self, *, force: bool = False) -> bool:
+        """Cached reachability probe of the whisper.cpp server.
+
+        Cheap enough for /health and the Home Assistant sensor poll, cached
+        (PROBE_CACHE_SECONDS) so request paths never stack probes.
+        """
+        now = time.monotonic()
+        if not force and now - self._probe_checked_at < PROBE_CACHE_SECONDS:
+            return self._probe_ok
         try:
             import requests
 
-            requests.get(self.whispercpp_url + "/", timeout=5)
-            LOGGER.info("whisper.cpp server is reachable")
+            requests.get(self.whispercpp_url + "/", timeout=3)
+            self._probe_ok = True
         except Exception as error:
-            LOGGER.warning(
-                "whisper.cpp server not reachable yet (%s); requests will retry",
-                error,
-            )
+            if self._probe_ok:
+                LOGGER.warning("whisper.cpp server unreachable: %s", error)
+            self._probe_ok = False
+        self._probe_checked_at = now
+        return self._probe_ok
 
     def is_loaded(self) -> bool:
-        return True
+        """Ready to transcribe = the whisper.cpp server answers."""
+        return self.whispercpp_reachable()
 
     def _whispercpp_transcribe(
-        self, audio_data: np.ndarray, sample_rate: int, language: str
+        self, audio_data: np.ndarray, sample_rate: int, language: str,
+        temperature: float = 0.0,
     ) -> str:
         """Transcribe one clip via the whisper.cpp server /inference endpoint."""
         import requests
@@ -238,7 +264,7 @@ class SpeechTranscriber:
             data={
                 "language": language,
                 "response_format": "json",
-                "temperature": "0.0",
+                "temperature": str(temperature),
                 # Beam search noticeably improves short degraded commands
                 # ("Agata." vs "Pagata." on real clips); the server-side
                 # --beam-size flag crashes at startup, per-request works.
@@ -274,7 +300,7 @@ class SpeechTranscriber:
     ) -> TranscriptionResult:
         """Transcribe normalized PCM audio."""
         if not self.is_loaded():
-            raise RuntimeError("Model not loaded")
+            raise RuntimeError("whisper.cpp server unreachable")
 
         resolved_language = self.resolve_language(language)
         duration_s = len(audio_data) / sample_rate
@@ -361,7 +387,7 @@ class SpeechTranscriber:
         # Single-pass, no diarization: the whole speech span is one
         # segment/speaker; ECAPA identification below still runs on it.
         text_raw = self._whispercpp_transcribe(
-            audio_data[crop_start:crop_end], sample_rate, resolved_language
+            audio_data[crop_start:crop_end], sample_rate, resolved_language, temperature
         )
         segments = (
             [

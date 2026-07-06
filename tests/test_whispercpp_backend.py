@@ -29,6 +29,7 @@ class WhisperCppBackendTests(unittest.TestCase):
         transcriber = SpeechTranscriber(
             whispercpp_url="http://fake:4050"
         )
+        transcriber.whispercpp_reachable = lambda **_: True
         return transcriber
 
     def test_is_loaded_without_local_model(self):

@@ -12,8 +12,11 @@ matches an enrolled person, the label becomes their name:
 
 ```
 Krzysztof: turn off the lights
-Speaker 1: We have a game this weekend.
+Speaker 0: could you turn on the TV
 ```
+
+(Each utterance is one speaker; unrecognized voices are always labeled with
+index 0.)
 
 The label for unenrolled speakers is configurable via `SPEAKER_LABEL`
 (default `Speaker`; set e.g. `SPEAKER_LABEL=Mówca` for Polish deployments —

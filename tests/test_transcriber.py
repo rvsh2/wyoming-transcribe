@@ -41,6 +41,7 @@ class AudioAndTranscriberTests(unittest.TestCase):
 
     def test_silent_audio_returns_empty_transcription_without_generate(self):
         transcriber = SpeechTranscriber()
+        transcriber.whispercpp_reachable = lambda **_: True
         fake_model = SimpleNamespace(device="cpu", dtype=torch.float32)
         fake_model.generate = unittest.mock.Mock()
         fake_processor = unittest.mock.Mock()
@@ -75,6 +76,7 @@ class AudioAndTranscriberTests(unittest.TestCase):
 
     def test_low_level_noise_returns_empty_transcription_without_generate(self):
         transcriber = SpeechTranscriber()
+        transcriber.whispercpp_reachable = lambda **_: True
         fake_model = SimpleNamespace(device="cpu", dtype=torch.float32)
         fake_model.generate = unittest.mock.Mock()
         fake_processor = unittest.mock.Mock()
@@ -95,6 +97,7 @@ class AudioAndTranscriberTests(unittest.TestCase):
 
     def test_vad_rejected_audio_returns_empty_transcription_without_generate(self):
         transcriber = SpeechTranscriber()
+        transcriber.whispercpp_reachable = lambda **_: True
         fake_model = SimpleNamespace(device="cpu", dtype=torch.float32)
         fake_model.generate = unittest.mock.Mock()
         fake_processor = unittest.mock.Mock()
@@ -123,6 +126,7 @@ class AudioAndTranscriberTests(unittest.TestCase):
 
     def test_vad_fallback_allows_transcription(self):
         transcriber = SpeechTranscriber()
+        transcriber.whispercpp_reachable = lambda **_: True
         transcriber._whispercpp_transcribe = lambda *_a, **_k: "speech detected"
         transcriber.vad_detector = SimpleNamespace(
             detect_speech=lambda *_args, **_kwargs: SimpleNamespace(
@@ -164,9 +168,10 @@ class AudioAndTranscriberTests(unittest.TestCase):
 
     def test_transcription_crops_to_vad_speech_span_and_keeps_global_timestamps(self):
         transcriber = SpeechTranscriber()
+        transcriber.whispercpp_reachable = lambda **_: True
         seen_audio_lengths = []
 
-        def fake_whisper(audio, sample_rate, language):
+        def fake_whisper(audio, sample_rate, language, temperature=0.0):
             seen_audio_lengths.append(len(audio))
             return "która godzina"
 
@@ -202,6 +207,7 @@ class AudioAndTranscriberTests(unittest.TestCase):
 
     def test_vad_rejects_too_quiet_detected_speech(self):
         transcriber = SpeechTranscriber()
+        transcriber.whispercpp_reachable = lambda **_: True
         fake_model = SimpleNamespace(device="cpu", dtype=torch.float32)
         fake_model.generate = unittest.mock.Mock()
         fake_processor = unittest.mock.Mock()
@@ -230,6 +236,7 @@ class AudioAndTranscriberTests(unittest.TestCase):
 
     def test_vad_rejects_speech_too_close_to_noise(self):
         transcriber = SpeechTranscriber()
+        transcriber.whispercpp_reachable = lambda **_: True
         fake_model = SimpleNamespace(device="cpu", dtype=torch.float32)
         fake_model.generate = unittest.mock.Mock()
         fake_processor = unittest.mock.Mock()
@@ -284,6 +291,7 @@ class SpeakerTextAndIdentificationTests(unittest.TestCase):
         from transcribe_wyoming.speaker_id import SpeakerMatch
 
         transcriber = SpeechTranscriber()
+        transcriber.whispercpp_reachable = lambda **_: True
         received_clips = []
 
         class FakeRegistry:
@@ -352,6 +360,7 @@ class SpeakerTextAndIdentificationTests(unittest.TestCase):
             from transcribe_wyoming.speaker_id import SpeakerMatch
 
             transcriber = SpeechTranscriber()
+            transcriber.whispercpp_reachable = lambda **_: True
             transcriber.pending_store = PendingStore(tmp)
             embedding = np.array([0.6, 0.8], dtype=np.float32)
             transcriber.speaker_registry = SimpleNamespace(
@@ -381,6 +390,7 @@ class SpeakerTextAndIdentificationTests(unittest.TestCase):
 
     def test_save_pending_utterance_never_raises(self):
         transcriber = SpeechTranscriber()
+        transcriber.whispercpp_reachable = lambda **_: True
         transcriber.pending_store = SimpleNamespace(
             save=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("disk full"))
         )

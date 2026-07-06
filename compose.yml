@@ -8,7 +8,7 @@ services:
     restart: unless-stopped
     ports:
       - "0.0.0.0:10300:10300"
-      # The management API (speaker enrollment, /load) is published on loopback
+      # The management API (speaker enrollment, settings) is published on loopback
       # by default. To use the UI from another machine or embed it in Home
       # Assistant (HACS integration / iframe panel), set UI_BIND=0.0.0.0 in
       # .env AND set API_TOKEN — never expose the API without a token.
@@ -32,7 +32,7 @@ services:
       # How speaker identity reaches the HA pipeline: prefix | field | both
       # (default "prefix"; changeable at runtime in the UI settings card).
       - SPEAKER_TEXT_MODE=${SPEAKER_TEXT_MODE:-prefix}
-      # Speaker identification (diarize -> named speakers via ECAPA enrollment)
+      # Speaker identification (named speakers via ECAPA enrollment)
       - SPEAKER_ID_ENABLED=true
       - SPEAKER_ENROLLMENT_DIR=/app/speakers
       - SPEAKER_MATCH_THRESHOLD=0.35
@@ -50,7 +50,10 @@ services:
       - VAD_MIN_SPEECH_RMS=0.007
       - VAD_MIN_SPEECH_TO_NOISE_RATIO=2.6
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8580/health"]
+      # asr_ready covers the whole chain: whisper.cpp reachable AND the
+      # Wyoming process accepting — a dead STT engine flips the container
+      # to unhealthy instead of silently returning empty transcripts.
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8580/health | grep -q '\"asr_ready\":true'"]
       interval: 30s
       timeout: 5s
       retries: 5

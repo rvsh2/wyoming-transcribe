@@ -215,9 +215,11 @@ WYOMING_PROBE_PORT = int(os.environ.get("WYOMING_PROBE_PORT", "10300"))
 
 
 async def _probe_asr_ready() -> bool:
-    """True when this process has the model, or the Wyoming port accepts."""
-    if service.is_loaded():
-        return True
+    """True when the whole STT chain serves: whisper.cpp answers AND the
+    Wyoming process accepts connections (this management process runs
+    --no-load-model, so both links live elsewhere and both can break)."""
+    if not await asyncio.to_thread(service.whispercpp_reachable):
+        return False
     try:
         _reader, writer = await asyncio.wait_for(
             asyncio.open_connection(WYOMING_PROBE_HOST, WYOMING_PROBE_PORT),
@@ -258,8 +260,9 @@ def render_compatibility_notes() -> str:
             "<code>no_timestamps</code>"
         ),
         (
-            "<strong>Diarization:</strong> per-speaker segments with timestamps "
-            "(<code>verbose_json</code>); transcript text is prefixed per speaker"
+            "<strong>Speaker identification:</strong> the utterance is one "
+            "segment; an enrolled speaker's name (or the speaker label) "
+            "prefixes the transcript text"
         ),
         (
             "<strong>Not supported:</strong> translation, auto language detection"
