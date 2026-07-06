@@ -85,7 +85,7 @@ echo ""
 echo "=== Test 7: POST /v1/audio/transcriptions (OpenAI) ==="
 curl -sS "${SERVER}/v1/audio/transcriptions" \
   -F "file=@${AUDIO_FILE}" \
-  -F "model=CohereLabs/cohere-transcribe-03-2026" \
+  -F "model=whisper.cpp" \
   -F "language=en"
 echo ""
 echo ""

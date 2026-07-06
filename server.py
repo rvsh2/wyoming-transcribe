@@ -96,7 +96,7 @@ def log_ignored_whisper_options(
     if no_timestamps:
         ignored.append("no_timestamps")
     if translate:
-        logger.warning("Translate mode is not supported by Cohere Transcribe - ignoring")
+        logger.warning("Translate mode is not supported - ignoring")
     if ignored:
         logger.info(
             "Accepted whisper.cpp compatibility parameters without applying them: %s",
@@ -272,8 +272,7 @@ def render_index_page() -> str:
     template = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
     replacements = {
         "__ASR_AVAILABLE__": "true" if service.is_loaded() else "false",
-        "__MODEL_ID__": html.escape(service.model_name or "not loaded"),
-        "__DEVICE__": html.escape(str(service.device) if service.device is not None else "unknown"),
+        "__MODEL_ID__": html.escape("whisper.cpp (" + service.whispercpp_url + ")"),
         "__MODEL_BACKEND__": html.escape(service.backend),
         "__SUPPORTED_LANGUAGE_BADGES__": render_supported_language_badges(),
         "__LANGUAGE_OPTIONS__": render_language_options(),
@@ -325,7 +324,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Wyoming Transcribe Server",
-    description="whisper.cpp-compatible API powered by syvai/cohere-transcribe-diarize",
+    description="whisper.cpp-compatible management API with speaker identification",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -443,19 +442,6 @@ async def openai_transcriptions(
         temperature=temperature,
     )
     return format_openai_response(response_format, result)
-
-
-@app.post("/load")
-async def load(model_path: Optional[str] = Form(None, alias="model")):
-    if model_path is None or model_path.strip() == "":
-        raise HTTPException(status_code=400, detail="No model path provided")
-
-    try:
-        await asyncio.to_thread(service.load, model_path.strip())
-        return JSONResponse({"status": "ok", "model": model_path.strip()})
-    except Exception as err:
-        logger.error("Failed to load model: %s", err, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to load model: {err}") from err
 
 
 @app.get("/settings")
@@ -788,13 +774,6 @@ def parse_args():
         help="Skip loading the ASR model (serve the enrollment UI / API only)",
     )
     parser.add_argument(
-        "-m",
-        "--model",
-        type=str,
-        default="syvai/cohere-transcribe-diarize",
-        help="HuggingFace model ID or local path",
-    )
-    parser.add_argument(
         "-l",
         "--language",
         type=str,
@@ -807,13 +786,6 @@ def parse_args():
         type=int,
         default=4,
         help="Number of threads (sets torch threads)",
-    )
-    parser.add_argument(
-        "-ng",
-        "--no-gpu",
-        action="store_true",
-        default=False,
-        help="Disable GPU, use CPU only",
     )
     parser.add_argument(
         "--disable-vad",
@@ -834,8 +806,6 @@ def main():
     args = parse_args()
     default_vad_config = VadConfig.from_env()
     service.set_default_language(args.language)
-    service.prefer_device = "cpu" if args.no_gpu else None
-    service.set_model_name(args.model)
     service.set_vad_config(
         VadConfig.from_env(
             enabled=False if args.disable_vad else default_vad_config.enabled,
@@ -844,19 +814,13 @@ def main():
     )
     torch.set_num_threads(args.threads)
 
-    if args.no_gpu:
-        os.environ["CUDA_VISIBLE_DEVICES"] = ""
-
-    print(f"  Model:    {service.model_name}")
+    print(f"  Backend:  whisper.cpp ({service.whispercpp_url})")
     print(f"  Language: {service.default_language}")
     print(f"  Host:     {args.host}:{args.port}")
     print(f"  Threads:  {args.threads}")
-    print(f"  GPU:      {'disabled' if args.no_gpu else 'auto'}")
 
-    if args.no_load_model:
-        logger.info("Skipping ASR model load (enrollment UI / API only mode)")
-    else:
-        service.load(args.model)
+    if not args.no_load_model:
+        service.load()
 
     logger.info("Starting server on %s:%s", args.host, args.port)
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")

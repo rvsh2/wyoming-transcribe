@@ -19,16 +19,12 @@ services:
       - /opt/wyoming-transcribe/data:/root/.cache/huggingface
       - /opt/wyoming-transcribe/speakers:/app/speakers
     environment:
-      # STT engine: "whispercpp" (HTTP to a whisper.cpp server; won the
-      # 17-clip Polish eval — no hallucination loops on short commands) or
-      # "cohere" (local diarize model — multi-speaker dictation).
-      - STT_BACKEND=${STT_BACKEND:-whispercpp}
+      # whisper.cpp server doing the actual speech-to-text.
       - WHISPERCPP_URL=${WHISPERCPP_URL:-http://whispercpp:4050}
       # Label for unenrolled speakers in transcript text (language-specific).
       - SPEAKER_LABEL=Mówca
+      # Cache for the (public) ECAPA and Silero models.
       - HF_HOME=/root/.cache/huggingface
-      - HF_TOKEN=${HF_TOKEN:-}
-      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:-}
       - NVIDIA_VISIBLE_DEVICES=all
       # Optional auth for the management API on 8580 (empty = disabled; the
       # loopback-only port publishing is then the safety boundary).

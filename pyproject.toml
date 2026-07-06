@@ -1,7 +1,7 @@
 [project]
 name = "wyoming-transcribe"
 version = "0.1.0"
-description = "Wyoming protocol STT server with speaker identification (Cohere Transcribe / whisper.cpp backends)"
+description = "Wyoming protocol STT server with speaker identification, backed by whisper.cpp"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

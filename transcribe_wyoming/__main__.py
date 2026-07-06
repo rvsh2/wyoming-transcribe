@@ -27,30 +27,17 @@ LOGGER = logging.getLogger("transcribe-wyoming")
 
 
 def build_info(transcriber: SpeechTranscriber) -> Info:
-    if transcriber.stt_backend == "whispercpp":
-        model = AsrModel(
-            name="whisper.cpp",
-            description="Speech-to-text via a whisper.cpp server, with speaker identification",
-            attribution=Attribution(
-                name="ggml-org / whisper.cpp",
-                url="https://github.com/ggml-org/whisper.cpp",
-            ),
-            installed=True,
-            languages=sorted(SUPPORTED_LANGUAGES),
-            version="0.1.0",
-        )
-    else:
-        model = AsrModel(
-            name=transcriber.model_name,
-            description="Speech-to-text with speaker identification and diarization",
-            attribution=Attribution(
-                name="syvai / Cohere",
-                url="https://huggingface.co/syvai/cohere-transcribe-diarize",
-            ),
-            installed=True,
-            languages=sorted(SUPPORTED_LANGUAGES),
-            version="0.1.0",
-        )
+    model = AsrModel(
+        name="whisper.cpp",
+        description="Speech-to-text via a whisper.cpp server, with speaker identification",
+        attribution=Attribution(
+            name="ggml-org / whisper.cpp",
+            url="https://github.com/ggml-org/whisper.cpp",
+        ),
+        installed=True,
+        languages=sorted(SUPPORTED_LANGUAGES),
+        version="0.1.0",
+    )
     program = AsrProgram(
         name="wyoming-transcribe",
         description="Wyoming protocol STT server with speaker identification",
@@ -76,21 +63,10 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         help="Wyoming server URI",
     )
     parser.add_argument(
-        "-m",
-        "--model",
-        default="syvai/cohere-transcribe-diarize",
-        help="Hugging Face model ID or local path",
-    )
-    parser.add_argument(
         "-l",
         "--language",
         default="en",
         help="Default spoken language (ISO 639-1 code)",
-    )
-    parser.add_argument(
-        "--device",
-        default=None,
-        help="Force runtime device, e.g. cpu or cuda:0",
     )
     parser.add_argument(
         "-t",
@@ -127,14 +103,12 @@ async def serve(args: argparse.Namespace) -> None:
 
     default_vad_config = VadConfig.from_env()
     transcriber = SpeechTranscriber(
-        model_name=args.model,
         default_language=args.language,
-        prefer_device=args.device,
         vad_config=VadConfig.from_env(
             enabled=False if args.disable_vad else default_vad_config.enabled,
             threshold=args.vad_threshold if args.vad_threshold is not None else default_vad_config.threshold,
         ),
-        speaker_registry=SpeakerRegistry.from_env(device=args.device),
+        speaker_registry=SpeakerRegistry.from_env(),
     )
     transcriber.load()
 
@@ -147,9 +121,8 @@ async def serve(args: argparse.Namespace) -> None:
         except Exception as error:
             LOGGER.warning("Speaker registry warm-up failed: %s", error)
 
-    # Warm the ASR/diarize model's generate path so the FIRST real transcription is
-    # fast (CUDA kernels compiled at startup). Calls _generate_diarized directly to
-    # bypass VAD; the dummy audio content is irrelevant.
+    # Warm every stage of the request path so the FIRST real transcription is
+    # fast (lazy imports, model downloads, CUDA kernels).
     try:
         import time as _time
 
@@ -181,24 +154,19 @@ async def serve(args: argparse.Namespace) -> None:
             LOGGER.info("Speaker embedding warmup done in %.1fs", _time.time() - _t)
 
         _t = _time.time()
-        if transcriber.stt_backend == "whispercpp":
-            # Round-trip a short clip so DNS/TCP and the server's decode path
-            # are exercised before the first real request.
-            _short = (_np.random.randn(16000).astype("float32") * 0.02)
-            transcriber._whispercpp_transcribe(_short, 16000, transcriber.default_language)
-        else:
-            _dummy_full = (_np.random.randn(30 * 16000).astype("float32") * 0.02)
-            transcriber._generate_diarized(_dummy_full, 16000, transcriber.default_language, 0.0)
-        LOGGER.info("ASR model warmup done in %.1fs", _time.time() - _t)
+        # Round-trip a short clip so DNS/TCP and the server's decode path
+        # are exercised before the first real request.
+        _short = (_np.random.randn(16000).astype("float32") * 0.02)
+        transcriber._whispercpp_transcribe(_short, 16000, transcriber.default_language)
+        LOGGER.info("STT warmup done in %.1fs", _time.time() - _t)
     except Exception as error:  # warmup must never block serving
-        LOGGER.warning("ASR model warmup failed (continuing): %s", error)
+        LOGGER.warning("Warmup failed (continuing): %s", error)
 
     info_event = build_info(transcriber).event()
     server = AsyncServer.from_uri(args.uri)
 
-    LOGGER.info("Model: %s", transcriber.model_name)
+    LOGGER.info("STT: whisper.cpp at %s", transcriber.whispercpp_url)
     LOGGER.info("Language: %s", transcriber.default_language)
-    LOGGER.info("Device: %s", transcriber.device)
     LOGGER.info("URI: %s", args.uri)
     LOGGER.info("Wyoming server ready")
     await server.run(

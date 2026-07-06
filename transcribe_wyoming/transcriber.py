@@ -1,4 +1,4 @@
-"""Transcription backends (Cohere Transcribe diarize, whisper.cpp) independent from transport."""
+"""whisper.cpp-backed transcription pipeline independent from HTTP/Wyoming transport."""
 
 from __future__ import annotations
 
@@ -13,8 +13,6 @@ from dataclasses import asdict, dataclass, field
 from typing import Optional
 
 import numpy as np
-import torch
-from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
 
 from .audio import is_effectively_silent, read_audio_to_numpy
 from .enrollment import read_role
@@ -27,24 +25,6 @@ from .vad import SileroVoiceActivityDetector, VadConfig
 
 LOGGER = logging.getLogger("transcribe-wyoming.transcriber")
 
-# Diarize decoder prompt. The processor still needs language=, but its own
-# decoder_input_ids are overridden with this sequence so the model emits speaker
-# and timestamp tokens. "{lang}" is filled with the resolved ISO 639-1 code.
-DIARIZE_PROMPT_TEMPLATE = (
-    "<|startofcontext|>",
-    "<|startoftranscript|>",
-    "<|emo:undefined|>",
-    "<|{lang}|>",
-    "<|{lang}|>",
-    "<|pnc|>",
-    "<|noitn|>",
-    "<|timestamp|>",
-    "<|diarize|>",
-)
-
-# Hard per-pass limit of the diarize model; longer audio is split into windows.
-MAX_CHUNK_SECONDS = 30
-
 # Padding kept around the VAD speech span when cropping non-speech audio before
 # generation. Leading/trailing noise makes the diarize model hallucinate
 # (observed on Polish far-field clips: 1.2 s of speech in a 8.9 s clip produced
@@ -53,160 +33,14 @@ MAX_CHUNK_SECONDS = 30
 # noise invites end-of-clip babble.
 CROP_PAD_SECONDS = 0.1
 
-# Generation budget per window. When a window's output hits this cap the window
-# is re-transcribed as two shorter ones (down to MIN_SPLIT_SECONDS) so dense
-# speech is not silently truncated.
-MAX_NEW_TOKENS = 400
-MIN_SPLIT_SECONDS = 8
-
-# Minimum ECAPA cosine similarity to treat a speaker from a later window as the
-# same person as one heard in an earlier window (see _merge_diarized_windows).
-# Override with the SPEAKER_CHAIN_THRESHOLD environment variable.
-DEFAULT_CHAIN_THRESHOLD = 0.40
-
 # Prefix used when rendering anonymous diarized speakers into a single
 # transcript. Localizable: this literal ends up in the transcript text that
 # downstream consumers (e.g. an LLM) see, so deployments set it to match the
 # spoken language (SPEAKER_LABEL=Mówca for Polish).
 SPEAKER_LABEL = os.environ.get("SPEAKER_LABEL", "Speaker")
 
-_SEGMENT_RE = re.compile(
-    r"<\|spltoken(\d+)\|>\s*<\|t:([0-9]+(?:\.[0-9]+)?)\|>(.*?)"
-    r"(?=<\|t:[0-9]|<\|spltoken\d|<\|endoftext\|>|$)",
-    re.DOTALL,
-)
-_SPECIAL_TOKEN_RE = re.compile(r"<\|[^|>]*\|>")
-
-
-# When long audio must be windowed, the cut is placed on the quietest moment
-# within the last SPLIT_SEARCH_SECONDS of the window instead of a hard cut at
-# exactly max_seconds, so words are not sliced mid-syllable.
-SPLIT_SEARCH_SECONDS = 10
-_SPLIT_FRAME_MS = 30
-
-
-def _quietest_split(
-    audio_data: np.ndarray, search_start: int, search_end: int, sample_rate: int
-) -> int:
-    """Sample index of the quietest moment in [search_start, search_end)."""
-    frame = max(1, int(sample_rate * _SPLIT_FRAME_MS / 1000))
-    segment = np.asarray(audio_data[search_start:search_end], dtype=np.float32)
-    frame_count = len(segment) // frame
-    if frame_count < 2:
-        return search_end
-    frames = segment[: frame_count * frame].reshape(frame_count, frame)
-    rms = np.sqrt(np.mean(np.square(frames), axis=1))
-    # Prefer the LAST near-quietest frame: on uniform audio this keeps full
-    # windows instead of always cutting at the search-region start.
-    threshold = float(rms.min()) * 1.25 + 1e-9
-    index = int(np.nonzero(rms <= threshold)[0][-1])
-    split = search_start + index * frame + frame // 2
-    if search_end - split <= frame * 2:
-        return search_end
-    return split
-
-
-def chunk_audio(audio_data: np.ndarray, sample_rate: int, max_seconds: int = MAX_CHUNK_SECONDS):
-    """Split audio into windows no longer than max_seconds, with second offsets.
-
-    Split points land on the quietest moment near each window's end (see
-    _quietest_split) so speech is not cut mid-word at the window boundary.
-    """
-    max_samples = int(max_seconds * sample_rate)
-    if max_samples <= 0 or len(audio_data) <= max_samples:
-        return [(audio_data, 0.0)]
-
-    search_samples = min(int(SPLIT_SEARCH_SECONDS * sample_rate), max_samples // 2)
-    chunks = []
-    start = 0
-    while len(audio_data) - start > max_samples:
-        window_end = start + max_samples
-        split = _quietest_split(
-            audio_data, window_end - search_samples, window_end, sample_rate
-        )
-        chunks.append((audio_data[start:split], start / sample_rate))
-        start = split
-    chunks.append((audio_data[start:], start / sample_rate))
-    return chunks
-
-
-def parse_diarized_output(raw: str, offset: float = 0.0, duration: Optional[float] = None) -> list[dict]:
-    """Parse the diarize token stream into ordered speaker segments.
-
-    Format (confirmed via spike): ``<|spltokenN|><|t:START|> text <|t:END|>`` repeated,
-    terminated by ``<|endoftext|>``. Timestamps are offset by ``offset`` seconds so
-    segments from later chunks land on the global timeline.
-
-    The model often omits the closing timestamp of the last segment; ``duration``
-    (the window length in seconds) is used as that segment's end so it never
-    collapses to a zero-length span (which would break speaker identification,
-    pending-voice clips and subtitle cues).
-    """
-    diarize_split = raw.split("<|diarize|>", 1)
-    body = diarize_split[1] if len(diarize_split) > 1 else raw
-
-    segments: list[dict] = []
-    matches = list(_SEGMENT_RE.finditer(body))
-
-    # The model sometimes emits transcript text BEFORE the first
-    # <|spltokenN|><|t:...|> header (observed on Polish multi-window audio);
-    # dropping it would lose whole sentences. Attribute it to the first
-    # headed speaker, spanning from the window start to their first timestamp.
-    if matches:
-        leading = _SPECIAL_TOKEN_RE.sub("", body[: matches[0].start()]).strip()
-        if leading:
-            segments.append(
-                {
-                    "speaker": int(matches[0].group(1)),
-                    "start": round(offset, 2),
-                    "end": round(float(matches[0].group(2)) + offset, 2),
-                    "text": leading,
-                }
-            )
-
-    for index, match in enumerate(matches):
-        speaker = int(match.group(1))
-        start = float(match.group(2))
-        text = _SPECIAL_TOKEN_RE.sub("", match.group(3)).strip()
-
-        end = None
-        end_match = re.match(r"\s*<\|t:([0-9]+(?:\.[0-9]+)?)\|>", body[match.end() :])
-        if end_match:
-            end = float(end_match.group(1))
-        elif index + 1 < len(matches):
-            end = float(matches[index + 1].group(2))
-        elif duration is not None:
-            end = max(start, duration)
-
-        if not text:
-            continue
-        segments.append(
-            {
-                "speaker": speaker,
-                "start": round(start + offset, 2),
-                "end": round((end if end is not None else start) + offset, 2),
-                "text": text,
-            }
-        )
-
-    if not segments:
-        # No diarize tokens (e.g. empty/garbled generation) - fall back to plain text.
-        plain = _SPECIAL_TOKEN_RE.sub("", body).strip()
-        if plain:
-            segments.append(
-                {
-                    "speaker": 0,
-                    "start": offset,
-                    "end": round(offset + (duration or 0.0), 2),
-                    "text": plain,
-                }
-            )
-
-    return segments
-
-
 def segment_label(segment: dict) -> str:
-    """Display label for a segment: enrolled name when known, else 'Mówca N'."""
+    """Display label for a segment: enrolled name when known, else '<SPEAKER_LABEL> N'."""
     name = segment.get("name")
     if name:
         return name
@@ -292,42 +126,29 @@ class TranscriptionResult:
 
 
 class SpeechTranscriber:
-    """Lazy-loading wrapper around the transcription backends.
+    """Transcription pipeline around a whisper.cpp server.
 
-    Two backends share the surrounding pipeline (VAD crop, ECAPA speaker
-    identification, pending-voice enrollment, recognition history):
-
-    - ``cohere`` (default): local ``syvai/cohere-transcribe-diarize`` with
-      multi-speaker diarization — suited to dictation/meeting transcription.
-    - ``whispercpp``: a whisper.cpp server reached over HTTP — no diarization
-      (the whole utterance is treated as one speaker), markedly more robust
-      on short/degraded voice commands.
+    The server does the speech-to-text (over HTTP); this class owns the
+    surrounding pipeline: Silero VAD cropping, ECAPA speaker identification,
+    pending-voice enrollment and the recognition history. The whole utterance
+    is treated as a single speaker (no diarization).
     """
 
     def __init__(
         self,
         *,
-        model_name: str = "syvai/cohere-transcribe-diarize",
         default_language: str = "en",
-        prefer_device: Optional[str] = None,
         vad_config: Optional[VadConfig] = None,
         speaker_registry: Optional[SpeakerRegistry] = None,
         settings_store: Optional[SettingsStore] = None,
         pending_store: Optional[PendingStore] = None,
-        stt_backend: Optional[str] = None,
         whispercpp_url: Optional[str] = None,
     ) -> None:
-        self.model_name = model_name
         self.default_language = self.resolve_language(default_language)
-        self.prefer_device = prefer_device
-        self.stt_backend = (stt_backend or os.environ.get("STT_BACKEND", "cohere")).lower()
         self.whispercpp_url = (
             whispercpp_url or os.environ.get("WHISPERCPP_URL", "http://whispercpp:4050")
         ).rstrip("/")
-        self.backend = "whispercpp" if self.stt_backend == "whispercpp" else "native"
-        self.model = None
-        self.processor = None
-        self.device = None
+        self.backend = "whispercpp"
         self.vad_detector = SileroVoiceActivityDetector(vad_config or VadConfig.from_env())
         self.speaker_registry = speaker_registry
         self.settings_store = settings_store or SettingsStore.from_env()
@@ -341,19 +162,12 @@ class SpeechTranscriber:
         self.recognition_log = RecognitionLog.from_env(
             speaker_registry.enrollment_dir if speaker_registry is not None else None
         )
-        self.speaker_chain_threshold = float(
-            os.environ.get("SPEAKER_CHAIN_THRESHOLD", DEFAULT_CHAIN_THRESHOLD)
-        )
-        self._prompt_id_cache: dict[str, torch.Tensor] = {}
         # Serializes inference (and model swaps in load()) so async transports
         # can safely offload transcribe_pcm to worker threads.
         self._inference_lock = threading.Lock()
         # Consecutive transcription failures, maintained by the Wyoming handler
         # to make persistent breakage visible despite empty-transcript replies.
         self.failure_streak = 0
-        # Tokens generated during the current transcription; reset per request
-        # and used only for the per-stage timing log.
-        self._gen_tokens = 0
 
     def resolve_language(self, language: Optional[str]) -> str:
         """Resolve a requested language or fall back to the configured default."""
@@ -367,7 +181,7 @@ class SpeechTranscriber:
         resolved = LANGUAGE_ALIASES.get(resolved, resolved)
         if resolved not in SUPPORTED_LANGUAGES:
             LOGGER.warning(
-                "Language '%s' not supported by Cohere Transcribe. Falling back to '%s'.",
+                "Language '%s' not in the supported-language list. Falling back to '%s'.",
                 resolved,
                 self.default_language,
             )
@@ -378,135 +192,29 @@ class SpeechTranscriber:
     def set_default_language(self, language: str) -> None:
         self.default_language = self.resolve_language(language)
 
-    def set_model_name(self, model_name: str) -> None:
-        self.model_name = model_name
-
     def set_vad_config(self, vad_config: VadConfig) -> None:
         self.vad_detector.update_config(vad_config)
 
-    def _select_device(self) -> torch.device:
-        if self.prefer_device == "cpu":
-            LOGGER.info("Using forced CPU device")
-            return torch.device("cpu")
-
-        if self.prefer_device and self.prefer_device.startswith("cuda"):
-            if not torch.cuda.is_available():
-                raise RuntimeError("CUDA device requested but CUDA is not available")
-            LOGGER.info("Using requested CUDA device: %s", self.prefer_device)
-            return torch.device(self.prefer_device)
-
-        if torch.cuda.is_available():
-            LOGGER.info("Using CUDA device: %s", torch.cuda.get_device_name(0))
-            return torch.device("cuda:0")
-
-        LOGGER.info("Using CPU device")
-        return torch.device("cpu")
-
-    def _model_dtype(self) -> torch.dtype:
-        """bfloat16 on CUDA (as recommended for the diarize model), fp32 on CPU."""
-        if self.prefer_device == "cpu":
-            return torch.float32
-        if torch.cuda.is_available():
-            return torch.bfloat16
-        return torch.float32
-
-    def load_model_artifacts(self, model_name: str):
-        """Load processor/model preferring local Hugging Face cache first."""
-        dtype = self._model_dtype()
-        processor_local = {"trust_remote_code": False, "local_files_only": True}
-        model_local = {**processor_local, "dtype": dtype}
-        processor_remote = {"trust_remote_code": False}
-        model_remote = {**processor_remote, "dtype": dtype}
-
-        try:
-            LOGGER.info("Trying to load model artifacts from local cache first")
-            processor = AutoProcessor.from_pretrained(model_name, **processor_local)
-            model = AutoModelForSpeechSeq2Seq.from_pretrained(model_name, **model_local)
-            LOGGER.info("Loaded model artifacts from local cache (dtype=%s)", dtype)
-            return processor, model
-        except Exception as local_error:
-            LOGGER.info(
-                "Local cache load failed, retrying with network access: %s",
-                local_error,
-            )
-
-        processor = AutoProcessor.from_pretrained(model_name, **processor_remote)
-        model = AutoModelForSpeechSeq2Seq.from_pretrained(model_name, **model_remote)
-        LOGGER.info("Loaded model artifacts with network access (dtype=%s)", dtype)
-        return processor, model
-
     def load(self, model_name: Optional[str] = None) -> None:
-        """Load the model and only swap instance state after success."""
-        if self.stt_backend == "whispercpp":
-            # No local weights: transcription happens in the whisper.cpp
-            # server. Probe it so a dead/unreachable server fails loudly at
-            # startup instead of as per-request empty transcripts.
-            LOGGER.info("Backend whispercpp: using server at %s", self.whispercpp_url)
-            try:
-                import requests
+        """Probe the whisper.cpp server (transcription runs server-side).
 
-                requests.get(self.whispercpp_url + "/", timeout=5)
-                LOGGER.info("whisper.cpp server is reachable")
-            except Exception as error:
-                LOGGER.warning(
-                    "whisper.cpp server not reachable yet (%s); requests will retry",
-                    error,
-                )
-            return
+        A dead/unreachable server fails loudly at startup instead of as
+        per-request empty transcripts.
+        """
+        LOGGER.info("Using whisper.cpp server at %s", self.whispercpp_url)
+        try:
+            import requests
 
-        if model_name:
-            self.model_name = model_name
-
-        LOGGER.info("Loading model: %s (backend=%s)", self.model_name, self.backend)
-        start_time = time.time()
-        next_processor, next_model = self.load_model_artifacts(self.model_name)
-
-        if torch.cuda.is_available() and self.prefer_device != "cpu":
-            gpu_count = torch.cuda.device_count()
-            primary_gpu_name = torch.cuda.get_device_name(0)
-            LOGGER.info(
-                "CUDA is available (%s visible GPU%s). Using primary device cuda:0 (%s).",
-                gpu_count,
-                "" if gpu_count == 1 else "s",
-                primary_gpu_name,
+            requests.get(self.whispercpp_url + "/", timeout=5)
+            LOGGER.info("whisper.cpp server is reachable")
+        except Exception as error:
+            LOGGER.warning(
+                "whisper.cpp server not reachable yet (%s); requests will retry",
+                error,
             )
-            next_device = self._select_device()
-            try:
-                next_model = next_model.to(next_device)
-            except (RuntimeError, torch.OutOfMemoryError) as error:
-                LOGGER.warning(
-                    "Falling back to CPU (float32) because loading the model on %s failed: %s",
-                    next_device,
-                    error,
-                )
-                torch.cuda.empty_cache()
-                next_device = torch.device("cpu")
-                # The dtype was chosen for CUDA (bfloat16); on CPU bf16 is slow
-                # and some ops are unsupported, so the fallback runs in float32.
-                next_model = next_model.to(next_device, dtype=torch.float32)
-        else:
-            next_device = self._select_device()
-            next_model = next_model.to(next_device)
-
-        next_model.eval()
-
-        # Swap under the inference lock so an in-flight transcription never
-        # sees a half-updated processor/model/device triple.
-        with self._inference_lock:
-            self.processor = next_processor
-            self.model = next_model
-            self.device = next_device
-            self._prompt_id_cache.clear()
-            # Fail fast here rather than crashing the first request mid-transcription.
-            self._validate_structural_prompt_tokens()
-
-        elapsed = time.time() - start_time
-        LOGGER.info("Model loaded in %.1fs using backend=%s", elapsed, self.backend)
 
     def is_loaded(self) -> bool:
-        if self.stt_backend == "whispercpp":
-            return True
-        return self.model is not None and self.processor is not None
+        return True
 
     def _whispercpp_transcribe(
         self, audio_data: np.ndarray, sample_rate: int, language: str
@@ -545,8 +253,8 @@ class SpeechTranscriber:
         return {
             "status": "ok" if self.is_loaded() else "loading",
             "ready": self.is_loaded(),
-            "model": self.model_name or None,
-            "device": str(self.device) if self.device is not None else None,
+            "model": "whisper.cpp",
+            "whispercpp_url": self.whispercpp_url,
             "backend": self.backend,
             "vad": self.vad_detector.status_payload(),
             "speaker_id": (
@@ -649,45 +357,26 @@ class SpeechTranscriber:
             )
         crop_offset = crop_start / sample_rate
 
-        self._gen_tokens = 0
         stage_start = time.perf_counter()
-        if self.stt_backend == "whispercpp":
-            # Single-pass, no diarization: the whole speech span is one
-            # segment/speaker; ECAPA identification below still runs on it.
-            text_raw = self._whispercpp_transcribe(
-                audio_data[crop_start:crop_end], sample_rate, resolved_language
-            )
-            windows = []
-            segments = (
-                [
-                    {
-                        "speaker": 0,
-                        "start": crop_offset,
-                        "end": crop_end / sample_rate,
-                        "text": text_raw,
-                    }
-                ]
-                if text_raw
-                else []
-            )
-            merge_embeddings: dict[int, np.ndarray] = {}
-            stages["generate"] = time.perf_counter() - stage_start
-            stages["merge"] = 0.0
-        else:
-            windows = []
-            for chunk, offset in chunk_audio(audio_data[crop_start:crop_end], sample_rate):
-                windows.extend(
-                    self._transcribe_window(
-                        chunk, crop_offset + offset, sample_rate, resolved_language, temperature
-                    )
-                )
-            stages["generate"] = time.perf_counter() - stage_start
-
-            stage_start = time.perf_counter()
-            segments, merge_embeddings = self._merge_diarized_windows(
-                windows, audio_data, sample_rate
-            )
-            stages["merge"] = time.perf_counter() - stage_start
+        # Single-pass, no diarization: the whole speech span is one
+        # segment/speaker; ECAPA identification below still runs on it.
+        text_raw = self._whispercpp_transcribe(
+            audio_data[crop_start:crop_end], sample_rate, resolved_language
+        )
+        segments = (
+            [
+                {
+                    "speaker": 0,
+                    "start": crop_offset,
+                    "end": crop_end / sample_rate,
+                    "text": text_raw,
+                }
+            ]
+            if text_raw
+            else []
+        )
+        merge_embeddings: dict[int, np.ndarray] = {}
+        stages["generate"] = time.perf_counter() - stage_start
 
         stage_start = time.perf_counter()
         speaker_embeddings = self._identify_speakers(
@@ -735,14 +424,11 @@ class SpeechTranscriber:
         )
         LOGGER.info(
             "STT stages ms: lock_wait=%.0f silence=%.0f vad=%.0f generate=%.0f "
-            "(passes=%d tokens=%d) merge=%.0f speaker_id=%.0f pending=%.0f history=%.0f",
+            "speaker_id=%.0f pending=%.0f history=%.0f",
             stages["lock_wait"] * 1000,
             stages["silence"] * 1000,
             stages["vad"] * 1000,
             stages["generate"] * 1000,
-            len(windows),
-            self._gen_tokens,
-            stages["merge"] * 1000,
             stages["speaker_id"] * 1000,
             stages["pending"] * 1000,
             stages["history"] * 1000,
@@ -774,303 +460,6 @@ class SpeechTranscriber:
             return 0, total_samples
         pad = int(CROP_PAD_SECONDS * sample_rate)
         return max(0, start - pad), min(total_samples, end + pad)
-
-    def _resolve_prompt_token(self, token: str) -> Optional[int]:
-        """Return the token id, or None if the tokenizer lacks it (unk)."""
-        tokenizer = self.processor.tokenizer
-        token_id = tokenizer.convert_tokens_to_ids(token)
-        if token_id is None or token_id == tokenizer.unk_token_id:
-            return None
-        return token_id
-
-    def _validate_structural_prompt_tokens(self) -> None:
-        """Fail fast at load time if the model lacks the diarize structural tokens."""
-        missing = [
-            template
-            for template in DIARIZE_PROMPT_TEMPLATE
-            if "{lang}" not in template and self._resolve_prompt_token(template) is None
-        ]
-        if missing:
-            raise RuntimeError(
-                f"Model {self.model_name} is not diarize-capable: tokenizer is missing "
-                f"prompt tokens {missing}."
-            )
-
-    def _language_token_id(self, language: str) -> int:
-        """Resolve the <|lang|> token, falling back to the default language then English."""
-        seen: list[str] = []
-        for candidate in (language, self.default_language, "en"):
-            if candidate in seen:
-                continue
-            seen.append(candidate)
-            token_id = self._resolve_prompt_token(f"<|{candidate}|>")
-            if token_id is not None:
-                if candidate != language:
-                    LOGGER.warning(
-                        "Language token '<|%s|>' missing; falling back to '<|%s|>'",
-                        language,
-                        candidate,
-                    )
-                return token_id
-        raise RuntimeError(
-            f"No usable language prompt token for '{language}' in model {self.model_name}"
-        )
-
-    def _build_prompt_ids(self, language: str) -> torch.Tensor:
-        """Build (and cache per language) the diarize decoder prompt token ids.
-
-        Structural tokens are validated once at load(); the language token falls
-        back to the default language (then English) if absent.
-        """
-        cached = self._prompt_id_cache.get(language)
-        if cached is not None:
-            return cached
-
-        ids: list[int] = []
-        for template in DIARIZE_PROMPT_TEMPLATE:
-            if "{lang}" in template:
-                ids.append(self._language_token_id(language))
-            else:
-                token_id = self._resolve_prompt_token(template)
-                if token_id is None:
-                    raise RuntimeError(
-                        f"Diarize prompt token '{template}' missing from tokenizer for "
-                        f"model {self.model_name}"
-                    )
-                ids.append(token_id)
-
-        prompt = torch.tensor([ids], device=self.model.device)
-        self._prompt_id_cache[language] = prompt
-        return prompt
-
-    def _generate_diarized(
-        self,
-        audio_data: np.ndarray,
-        sample_rate: int,
-        language: str,
-        temperature: float,
-    ) -> tuple[str, bool]:
-        """Run a single diarize generation pass.
-
-        Returns the raw token stream and whether generation was cut off by the
-        MAX_NEW_TOKENS cap (i.e. the window's tail may be missing).
-        """
-        inputs = self.processor(
-            audio_data,
-            sampling_rate=sample_rate,
-            return_tensors="pt",
-            language=language,
-        )
-
-        model_inputs: dict = {}
-        for key, value in inputs.items():
-            if not isinstance(value, torch.Tensor):
-                continue  # e.g. audio_chunk_index is a plain list
-            if value.is_floating_point():
-                model_inputs[key] = value.to(self.model.device, dtype=self.model.dtype)
-            else:
-                model_inputs[key] = value.to(self.model.device)
-
-        # Override the processor's decoder prompt to force diarize + timestamps.
-        model_inputs["decoder_input_ids"] = self._build_prompt_ids(language)
-        if "attention_mask" not in model_inputs:
-            # Fallback only; this model's processor always returns attention_mask.
-            # input_features is (batch, frames, features) for cohere_asr, so
-            # shape[:2] = (batch, frames) is the correct mask shape (matches the
-            # model card's torch.ones(input_features.shape[:2])).
-            features = model_inputs["input_features"]
-            model_inputs["attention_mask"] = torch.ones(
-                features.shape[:2], device=self.model.device
-            )
-
-        generate_kwargs = {
-            "max_new_tokens": MAX_NEW_TOKENS,
-            "do_sample": False,
-            "repetition_penalty": 1.2,
-        }
-        if temperature > 0:
-            generate_kwargs["do_sample"] = True
-            generate_kwargs["temperature"] = temperature
-
-        with torch.no_grad():
-            outputs = self.model.generate(**model_inputs, **generate_kwargs)
-
-        generated_tokens = outputs[0].shape[-1] - model_inputs["decoder_input_ids"].shape[-1]
-        self._gen_tokens += generated_tokens
-        end_token_id = self._resolve_prompt_token("<|endoftext|>")
-        if end_token_id is None:
-            end_token_id = self.processor.tokenizer.eos_token_id
-        truncated = generated_tokens >= MAX_NEW_TOKENS and (
-            end_token_id is None or int(outputs[0][-1]) != end_token_id
-        )
-
-        return self.processor.tokenizer.decode(outputs[0], skip_special_tokens=False), truncated
-
-    def _transcribe_window(
-        self,
-        chunk: np.ndarray,
-        offset: float,
-        sample_rate: int,
-        language: str,
-        temperature: float,
-    ) -> list[list[dict]]:
-        """Transcribe one window, splitting it in half when generation is truncated.
-
-        Returns one parsed-segment list per generation pass; each pass has its
-        own window-local speaker indices, so callers must merge them via
-        _merge_diarized_windows.
-        """
-        raw, truncated = self._generate_diarized(chunk, sample_rate, language, temperature)
-        duration = len(chunk) / sample_rate
-
-        if truncated and duration >= 2 * MIN_SPLIT_SECONDS:
-            LOGGER.warning(
-                "Diarize generation hit the %d-token cap on a %.1fs window; "
-                "retrying as two shorter windows",
-                MAX_NEW_TOKENS,
-                duration,
-            )
-            half = len(chunk) // 2
-            return self._transcribe_window(
-                chunk[:half], offset, sample_rate, language, temperature
-            ) + self._transcribe_window(
-                chunk[half:], offset + half / sample_rate, sample_rate, language, temperature
-            )
-
-        if truncated:
-            LOGGER.warning(
-                "Diarize generation hit the %d-token cap on a %.1fs window; "
-                "the end of this window may be missing from the transcript",
-                MAX_NEW_TOKENS,
-                duration,
-            )
-
-        return [parse_diarized_output(raw, offset=offset, duration=duration)]
-
-    def _merge_diarized_windows(
-        self,
-        windows: list[list[dict]],
-        audio_data: np.ndarray,
-        sample_rate: int,
-    ) -> tuple[list[dict], dict[int, np.ndarray]]:
-        """Merge per-window diarized segments onto one global speaker space.
-
-        Diarize speaker indices restart at 0 in every generation window, so the
-        same index in two windows usually names two different people. Each
-        window-local speaker is matched to speakers from earlier windows by
-        ECAPA voiceprint similarity; without a confident match it gets a fresh
-        global index — over-splitting is recoverable by enrollment naming,
-        silently merging two people is not.
-
-        Without the embedding backend (speaker ID disabled, or embedding
-        failure before any window was merged) the model's own indices are kept
-        as-is across windows: a single speaker then stays one "Mówca 0" instead
-        of being shredded into per-window speakers, at the cost of the
-        (pre-existing) risk that two different people sharing index 0 in
-        different windows get merged. When embeddings fail mid-merge, later
-        windows get fresh indices instead — their raw indices would collide
-        with already-assigned global ones and silently merge two people.
-
-        Returns the merged segments plus one L2-normalized ECAPA voiceprint per
-        global speaker (empty when embeddings were unavailable), so speaker
-        identification does not have to re-embed the same audio.
-        """
-        windows = [window for window in windows if window]
-        if not windows:
-            return [], {}
-        if len(windows) == 1:
-            return windows[0], {}
-
-        registry = self.speaker_registry
-        use_embeddings = registry is not None and registry.enabled
-
-        merged: list[dict] = []
-        # global speaker index -> (sum of L2-normalized embeddings, count)
-        profiles: dict[int, tuple[np.ndarray, int]] = {}
-        next_index = 0
-
-        for window in windows:
-            local_speakers = sorted({segment["speaker"] for segment in window})
-
-            embeddings: dict[int, np.ndarray] = {}
-            if use_embeddings:
-                clips = [
-                    self._speaker_clip(window, local, audio_data, sample_rate)
-                    for local in local_speakers
-                ]
-                try:
-                    for local, embedding in zip(local_speakers, registry.embed_batch(clips)):
-                        if embedding is not None:
-                            embeddings[local] = embedding
-                except Exception as error:
-                    LOGGER.warning(
-                        "Cross-window speaker embedding failed; speakers will not be "
-                        "merged across windows: %s",
-                        error,
-                    )
-                    use_embeddings = False
-                    embeddings = {}
-
-            if not use_embeddings:
-                if profiles:
-                    # Mid-merge failure: earlier windows already occupy global
-                    # indices, so this window's raw indices could silently
-                    # merge two different people. Assign fresh indices instead.
-                    fallback_mapping = {}
-                    for local in local_speakers:
-                        fallback_mapping[local] = next_index
-                        next_index += 1
-                    for segment in window:
-                        segment["speaker"] = fallback_mapping[segment["speaker"]]
-                # Otherwise no voiceprints were ever compared: preserve the
-                # model's raw indices (see docstring).
-                merged.extend(window)
-                continue
-
-            # Best-score-first unique assignment of window speakers to known ones.
-            candidates: list[tuple[float, int, int]] = []
-            for local, embedding in embeddings.items():
-                for global_index, (vector_sum, count) in profiles.items():
-                    profile = vector_sum / count
-                    norm = float(np.linalg.norm(profile))
-                    if norm == 0.0:
-                        continue
-                    score = float(np.dot(embedding, profile / norm))
-                    if score >= self.speaker_chain_threshold:
-                        candidates.append((score, local, global_index))
-            candidates.sort(key=lambda item: item[0], reverse=True)
-
-            mapping: dict[int, int] = {}
-            used_globals: set[int] = set()
-            for score, local, global_index in candidates:
-                if local in mapping or global_index in used_globals:
-                    continue
-                mapping[local] = global_index
-                used_globals.add(global_index)
-            for local in local_speakers:
-                if local not in mapping:
-                    mapping[local] = next_index
-                    next_index += 1
-
-            for local, embedding in embeddings.items():
-                global_index = mapping[local]
-                if global_index in profiles:
-                    vector_sum, count = profiles[global_index]
-                    profiles[global_index] = (vector_sum + embedding, count + 1)
-                else:
-                    profiles[global_index] = (embedding.copy(), 1)
-
-            for segment in window:
-                segment["speaker"] = mapping[segment["speaker"]]
-            merged.extend(window)
-
-        speaker_embeddings: dict[int, np.ndarray] = {}
-        for global_index, (vector_sum, count) in profiles.items():
-            mean = vector_sum / count
-            norm = float(np.linalg.norm(mean))
-            if norm > 0.0:
-                speaker_embeddings[global_index] = (mean / norm).astype(np.float32)
-        return merged, speaker_embeddings
 
     @staticmethod
     def _speaker_clip(

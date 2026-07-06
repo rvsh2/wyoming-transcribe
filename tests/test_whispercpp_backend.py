@@ -27,7 +27,7 @@ def _speechy_vad(num_samples: int):
 class WhisperCppBackendTests(unittest.TestCase):
     def _transcriber(self) -> SpeechTranscriber:
         transcriber = SpeechTranscriber(
-            stt_backend="whispercpp", whispercpp_url="http://fake:4050"
+            whispercpp_url="http://fake:4050"
         )
         return transcriber
 

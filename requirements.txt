@@ -2,7 +2,6 @@ requests
 fastapi>=0.110.0
 uvicorn[standard]>=0.29.0
 python-multipart>=0.0.9
-transformers==5.4.0
 torch==2.6.0
 torchaudio==2.6.0
 huggingface_hub

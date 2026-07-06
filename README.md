@@ -1,24 +1,14 @@
 # Wyoming Transcribe
 
 Self-hosted speech-to-text for Home Assistant (Wyoming protocol) with
-**speaker identification** (mapping voices to named people you enrolled) and
-two interchangeable STT backends:
+**speaker identification** (mapping voices to named people you enrolled).
 
-| `STT_BACKEND` | Engine | Diarization | Best for |
-|---|---|---|---|
-| `whispercpp` | [whisper.cpp](https://github.com/ggml-org/whisper.cpp) server over HTTP (e.g. `large-v3-turbo`) | no (one speaker per utterance) | **voice assistant commands** — markedly more robust on short/degraded audio, no hallucination loops |
-| `cohere` | local [`syvai/cohere-transcribe-diarize`](https://huggingface.co/syvai/cohere-transcribe-diarize) | yes (who spoke when) | dictation and multi-speaker recordings |
-
-Defaults: the shipped `compose.yml` / `.env.example` select **`whispercpp`**
-(recommended for a voice assistant; requires a running whisper.cpp server).
-With no `STT_BACKEND` set at all, bare `python -m transcribe_wyoming` falls
-back to `cohere`, which is self-contained (downloads its model from
-Hugging Face) but hallucination-prone on short degraded utterances.
-
-Both backends share the same pipeline: Silero VAD cropping, ECAPA voiceprint
-speaker identification, unknown-voice enrollment and recognition history.
-Transcripts come back with per-speaker prefixes; when a voice matches an
-enrolled person, the label becomes their name:
+The speech-to-text itself runs in a [whisper.cpp](https://github.com/ggml-org/whisper.cpp)
+server (e.g. `large-v3-turbo`) reached over HTTP; this service owns the rest of
+the pipeline: Silero VAD cropping, ECAPA voiceprint speaker identification,
+unknown-voice enrollment and recognition history. Each utterance is treated as
+a single speaker. Transcripts come back with a speaker prefix; when the voice
+matches an enrolled person, the label becomes their name:
 
 ```
 Krzysztof: turn off the lights
@@ -29,20 +19,15 @@ The label for unenrolled speakers is configurable via `SPEAKER_LABEL`
 (default `Speaker`; set e.g. `SPEAKER_LABEL=Mówca` for Polish deployments —
 the label ends up in the transcript your conversation agent sees).
 
-Backend selection: `STT_BACKEND=whispercpp` plus `WHISPERCPP_URL`
-(default `http://whispercpp:4050`) pointing at a running
+Point `WHISPERCPP_URL` (default `http://whispercpp:4050`) at a running
 [whisper.cpp server](https://github.com/ggml-org/whisper.cpp/tree/master/examples/server),
-e.g. `whisper-server --host 0.0.0.0 --port 4050 --model /models/ggml-large-v3-turbo.bin --beam-size 5`.
-
-Cohere-backend notes: the diarize model is optimized for English (other
-languages transcribe but diarize less reliably); audio longer than 30 s is
-split into windows automatically and anonymous `Speaker N` labels are kept
-consistent across windows by voiceprint matching.
+e.g. `whisper-server --host 0.0.0.0 --port 4050 --model /models/ggml-large-v3-turbo.bin`
+(beam search is requested per inference call, not via server flags).
 
 ## Quick start (Docker)
 
 ```bash
-cp .env.example .env   # set HF_TOKEN (gated model), API_TOKEN, optionally UI_BIND
+cp .env.example .env   # set API_TOKEN, optionally UI_BIND / WHISPERCPP_URL
 docker compose up --build -d
 ```
 
@@ -55,16 +40,8 @@ One container runs two services:
   `API_TOKEN=<secret>` in `.env`. With `API_TOKEN` set, all endpoints except
   `/` and `/health` require `X-API-Token: <token>` (or `Authorization: Bearer`).
 
-The model downloads from Hugging Face once into the cache volume. It is
-distributed via HF Xet: make sure the first download completes (a container
-killed mid-download leaves `*.incomplete` weights that re-fetch on each boot),
-and do **not** set `HF_HUB_DISABLE_XET=1`. To pre-fetch without the container:
-
-```bash
-docker run --rm -v /opt/wyoming-transcribe/data:/root/.cache/huggingface \
-  -e HF_TOKEN="$HF_TOKEN" python:3.12-slim \
-  sh -c "pip install -q huggingface_hub && hf download syvai/cohere-transcribe-diarize"
-```
+The (public) Silero VAD and ECAPA speaker models download from Hugging Face
+once into the cache volume on first start.
 
 ## Home Assistant
 
@@ -114,8 +91,8 @@ Ready-made scripts and system-prompt snippets for an LLM conversation agent
 
 ## Speaker identification
 
-Enable with `SPEAKER_ID_ENABLED=true`. Each diarized speaker's ECAPA-TDNN
-voiceprint is compared to enrolled profiles; the closest match above
+Enable with `SPEAKER_ID_ENABLED=true`. The utterance's ECAPA-TDNN voiceprint
+is compared to enrolled profiles; the closest match above
 `SPEAKER_MATCH_THRESHOLD` becomes the name.
 
 - **Enrollment**: add a person in the panel and record/upload 10–30 s of clean
@@ -152,12 +129,10 @@ Key environment variables (more in `.env.example` and `compose.yml`):
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `HF_TOKEN` | — | Hugging Face token for the gated model |
 | `API_TOKEN` | unset | management API auth; required if 8580 leaves localhost |
 | `UI_BIND` | `127.0.0.1` | bind address of the management UI/API |
 | `SPEAKER_ID_ENABLED` | `false` | turn speaker identification on |
 | `SPEAKER_MATCH_THRESHOLD` | `0.35` | cosine threshold; raise to reduce false matches |
-| `SPEAKER_CHAIN_THRESHOLD` | `0.40` | linking the same anonymous speaker across 30 s windows |
 | `VAD_ENABLED` | `true` | Silero-VAD silence/noise filtering + speech-span cropping |
 
 Recommended VAD preset for Home Assistant (already in `compose.yml`):
@@ -169,7 +144,7 @@ VAD_MIN_SILENCE_DURATION_MS=120
 VAD_SPEECH_PAD_MS=50
 VAD_MIN_TOTAL_SPEECH_MS=70
 VAD_MIN_MAX_SEGMENT_MS=45
-VAD_MIN_SPEECH_RMS=0.014
+VAD_MIN_SPEECH_RMS=0.007
 VAD_MIN_SPEECH_TO_NOISE_RATIO=2.6
 ```
 
@@ -221,10 +196,9 @@ Requirements: Python 3.11+, `uv`; GPU preferred, CPU fallback supported.
 
 ## Limitations
 
-- no partial/streaming transcripts, no language auto-detection, no `zeroconf`
-- diarization labels are per-clip and can be imperfect (mitigated by enrollment)
-- supported languages: `en fr de it es pt el nl pl zh ja ko vi ar` (validated
-  mainly for English)
+- no partial/streaming transcripts, no `zeroconf`
+- no diarization: the whole utterance is attributed to one (dominant) voice
+- requires a reachable whisper.cpp server (the STT engine runs there)
 
 ## License
 

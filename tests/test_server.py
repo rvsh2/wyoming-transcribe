@@ -50,8 +50,6 @@ def make_upload_file(content: bytes, filename: str = "test.wav") -> FakeUploadFi
 class TranscribeApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self.audio_bytes = make_wav_bytes()
-        self.service_model = patch.object(server.service, "model", object())
-        self.service_processor = patch.object(server.service, "processor", object())
         self.service_vad = patch.object(
             server.service.vad_detector,
             "detect_speech",
@@ -66,14 +64,11 @@ class TranscribeApiTests(unittest.TestCase):
                 speech_to_noise_ratio=15.0,
             ),
         )
-        self.service_model.start()
-        self.service_processor.start()
         self.service_vad.start()
 
     def tearDown(self) -> None:
         self.service_vad.stop()
-        self.service_processor.stop()
-        self.service_model.stop()
+
 
     def run_async(self, coro):
         return asyncio.run(coro)
@@ -120,17 +115,14 @@ class TranscribeApiTests(unittest.TestCase):
         self.assertIn("source-summary", response)
 
     def test_health_endpoint_reports_ready_state(self):
-        with patch.object(server.service, "model_name", "CohereLabs/test-model"), patch.object(
-            server.service, "device", "cuda:0"
-        ), patch.object(server.service, "backend", "native"):
-            response = self.run_async(server.health(SimpleNamespace(headers={})))
+        response = self.run_async(server.health(SimpleNamespace(headers={})))
 
         payload = self.decode_json_response(response)
         self.assertEqual(payload["status"], "ok")
         self.assertTrue(payload["ready"])
-        self.assertEqual(payload["model"], "CohereLabs/test-model")
-        self.assertEqual(payload["device"], "cuda:0")
-        self.assertEqual(payload["backend"], "native")
+        self.assertEqual(payload["model"], "whisper.cpp")
+        self.assertEqual(payload["backend"], "whispercpp")
+        self.assertIn("whispercpp_url", payload)
 
     def test_inference_returns_json_response(self):
         with patch.object(server.service, "transcribe_pcm", return_value=SimpleNamespace(asdict=lambda: {
@@ -170,11 +162,6 @@ class TranscribeApiTests(unittest.TestCase):
         response = self.run_async(server.index())
         self.assertIn("const ASR_AVAILABLE = true;", response)
         self.assertNotIn("__ASR_AVAILABLE__", response)
-
-    def test_index_page_marks_asr_unavailable_without_model(self):
-        with patch.object(server.service, "model", None):
-            response = self.run_async(server.index())
-        self.assertIn("const ASR_AVAILABLE = false;", response)
 
     def test_srt_and_vtt_render_one_cue_per_diarized_segment(self):
         result = {
@@ -476,13 +463,6 @@ class TranscribeApiTests(unittest.TestCase):
         payload = self.decode_json_response(self.run_async(server.health(request)))
         self.assertTrue(payload["asr_ready"])
 
-        with patch.object(server.service, "model", None), patch.object(
-            server, "WYOMING_PROBE_PORT", 1
-        ):
-            payload = self.decode_json_response(self.run_async(server.health(request)))
-        self.assertFalse(payload["asr_ready"])
-        self.assertFalse(payload["ready"])
-
     def test_health_hides_speaker_names_from_unauthenticated_callers(self):
         from fastapi.testclient import TestClient
 
@@ -588,16 +568,6 @@ class TranscribeApiTests(unittest.TestCase):
         self.assertEqual(payload["text"], "openai shape")
         self.assertEqual(payload["segments"][0]["start"], 0.0)
 
-    def test_load_endpoint_returns_ok_on_success(self):
-        with patch.object(server.service, "load") as load_model:
-            response = self.run_async(server.load(model_path="CohereLabs/mock-model"))
-
-        self.assertEqual(
-            self.decode_json_response(response),
-            {"status": "ok", "model": "CohereLabs/mock-model"},
-        )
-        load_model.assert_called_once()
-
     def test_empty_upload_returns_400(self):
         with self.assertRaises(HTTPException) as ctx:
             self.run_async(
@@ -655,14 +625,6 @@ class TranscribeApiTests(unittest.TestCase):
 
         self.assertEqual(self.decode_json_response(response)["text"], "lang=pl")
 
-    def test_missing_model_returns_503(self):
-        with patch.object(server.service, "model", None), patch.object(server.service, "processor", None):
-            with self.assertRaises(HTTPException) as ctx:
-                self.call_inference()
-
-        self.assertEqual(ctx.exception.status_code, 503)
-        self.assertEqual(ctx.exception.detail, "Model not loaded")
-
     def test_transcription_failure_returns_500(self):
         with patch.object(server.service, "transcribe_pcm", side_effect=RuntimeError("boom")):
             with self.assertRaises(HTTPException) as ctx:
@@ -670,14 +632,6 @@ class TranscribeApiTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.status_code, 500)
         self.assertIn("Transcription failed: boom", ctx.exception.detail)
-
-    def test_load_failure_returns_500(self):
-        with patch.object(server.service, "load", side_effect=RuntimeError("cannot load")):
-            with self.assertRaises(HTTPException) as ctx:
-                self.run_async(server.load(model_path="broken-model"))
-
-        self.assertEqual(ctx.exception.status_code, 500)
-        self.assertIn("Failed to load model: cannot load", ctx.exception.detail)
 
     def test_compatibility_only_parameters_do_not_break_inference(self):
         mocked_result = SimpleNamespace(
@@ -713,61 +667,6 @@ class TranscribeApiTests(unittest.TestCase):
         self.assertGreater(len(stereo_audio), 0)
         self.assertGreater(len(mono_audio), 0)
 
-    def test_temperature_controls_generate_sampling(self):
-        class FakeBatch(dict):
-            def to(self, device, dtype=None):
-                return self
-
-        fake_inputs = FakeBatch(
-            {
-                "audio_chunk_index": [0],
-                "input_features": torch.zeros(1, 4, 8),
-                "attention_mask": torch.ones(1, 4),
-            }
-        )
-
-        class FakeModel:
-            device = "cpu"
-            dtype = torch.float32
-
-            def __init__(self):
-                self.calls = []
-
-            def generate(self, **kwargs):
-                self.calls.append(kwargs)
-                return torch.tensor([[1, 2, 3]])
-
-        class FakeTokenizer:
-            unk_token_id = 0
-
-            def convert_tokens_to_ids(self, _token):
-                return 5
-
-            def decode(self, *args, **kwargs):
-                return "<|diarize|><|spltoken0|><|t:0.0|> decoded <|t:1.0|><|endoftext|>"
-
-        class FakeProcessor:
-            tokenizer = FakeTokenizer()
-
-            def __call__(self, *args, **kwargs):
-                return fake_inputs
-
-        fake_model = FakeModel()
-        fake_processor = FakeProcessor()
-
-        with patch.object(server.service, "model", fake_model), patch.object(
-            server.service, "processor", fake_processor
-        ):
-            audio = np.full(1600, 0.2, dtype=np.float32)
-            server.service.transcribe_pcm(audio, sample_rate=16000, language="pl", temperature=0.0)
-            server.service.transcribe_pcm(audio, sample_rate=16000, language="pl", temperature=0.7)
-
-        greedy_call, sampling_call = fake_model.calls
-        self.assertFalse(greedy_call["do_sample"])
-        self.assertNotIn("temperature", greedy_call)
-        self.assertTrue(sampling_call["do_sample"])
-        self.assertEqual(sampling_call["temperature"], 0.7)
-
     def test_build_segments_exposes_name_and_clamps_end(self):
         result = {
             "text": "x",
@@ -786,9 +685,7 @@ class TranscribeApiTests(unittest.TestCase):
 
         # The silence short-circuit lives in transcribe_pcm (shared with the
         # Wyoming path); generation must never run for silent audio.
-        with patch.object(server.service, "model", object()), patch.object(
-            server.service, "processor", object()
-        ), patch.object(server.service, "_generate_diarized") as generate:
+        with patch.object(server.service, "_whispercpp_transcribe") as generate:
             result = server.run_transcription_request(
                 audio_data=silent_audio,
                 sr=16000,
@@ -810,26 +707,3 @@ class TranscribeApiTests(unittest.TestCase):
         self.assertFalse(hasattr(args, "trust_remote_code"))
         self.assertFalse(hasattr(args, "no_trust_remote_code"))
 
-    def test_load_model_only_swaps_globals_after_successful_load(self):
-        old_model = object()
-        old_processor = object()
-        old_device = object()
-
-        with patch.object(server.service, "model", old_model), patch.object(
-            server.service, "processor", old_processor
-        ), patch.object(server.service, "device", old_device), patch(
-            "transformers.AutoProcessor.from_pretrained", return_value=object()
-        ), patch(
-            "transformers.AutoModelForSpeechSeq2Seq.from_pretrained",
-            side_effect=RuntimeError("load failed"),
-        ):
-            with self.assertRaises(RuntimeError):
-                server.service.load("broken-model")
-
-            self.assertIs(server.service.model, old_model)
-            self.assertIs(server.service.processor, old_processor)
-            self.assertIs(server.service.device, old_device)
-
-
-if __name__ == "__main__":
-    unittest.main()
