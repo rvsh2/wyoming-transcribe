@@ -45,7 +45,7 @@ class WhisperCppBackendTests(unittest.TestCase):
 
         def fake_post(url, files=None, data=None, timeout=None):
             posted["url"] = url
-            posted["language"] = data["language"]
+            posted["data"] = data
             posted["wav_bytes"] = files["file"][1].read()
             return SimpleNamespace(
                 raise_for_status=lambda: None,
@@ -58,7 +58,10 @@ class WhisperCppBackendTests(unittest.TestCase):
             result = transcriber.transcribe_pcm(audio, sample_rate=16000, language="pl")
 
         self.assertEqual(posted["url"], "http://fake:4050/inference")
-        self.assertEqual(posted["language"], "pl")
+        self.assertEqual(posted["data"]["language"], "pl")
+        self.assertEqual(posted["data"]["suppress_nst"], "true")
+        # No WHISPER_INITIAL_PROMPT set -> no prompt field in the request.
+        self.assertNotIn("prompt", posted["data"])
         # 44-byte WAV header + 16-bit samples
         self.assertEqual(len(posted["wav_bytes"]), 44 + num_samples * 2)
         self.assertIn("Ala ma kota.", result.text)
@@ -67,6 +70,30 @@ class WhisperCppBackendTests(unittest.TestCase):
         self.assertEqual(segment["speaker"], 0)
         self.assertEqual(segment["start"], 0.0)
         self.assertAlmostEqual(segment["end"], 1.0, places=2)
+
+    def test_initial_prompt_env_is_forwarded(self):
+        num_samples = 16000
+        posted = {}
+
+        def fake_post(url, files=None, data=None, timeout=None):
+            posted["data"] = data
+            return SimpleNamespace(
+                raise_for_status=lambda: None, json=lambda: {"text": "Agata."}
+            )
+
+        audio = 0.05 * np.ones(num_samples, dtype=np.float32)
+        with patch(
+            "transcribe_wyoming.transcriber.WHISPER_INITIAL_PROMPT",
+            "Agata (asystentka domowa), Krzysztof.",
+        ):
+            transcriber = self._transcriber()
+            transcriber.vad_detector = _speechy_vad(num_samples)
+            with patch("requests.post", side_effect=fake_post):
+                transcriber.transcribe_pcm(audio, sample_rate=16000, language="pl")
+
+        self.assertEqual(
+            posted["data"]["prompt"], "Agata (asystentka domowa), Krzysztof."
+        )
 
     def test_empty_server_text_yields_empty_transcript(self):
         transcriber = self._transcriber()

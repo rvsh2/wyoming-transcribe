@@ -137,6 +137,13 @@ Key environment variables (more in `.env.example` and `compose.yml`):
 | `SPEAKER_ID_ENABLED` | `false` | turn speaker identification on |
 | `SPEAKER_MATCH_THRESHOLD` | `0.35` | cosine threshold; raise to reduce false matches |
 | `VAD_ENABLED` | `true` | Silero-VAD silence/noise filtering + speech-span cropping |
+| `WHISPER_INITIAL_PROMPT` | unset | vocabulary hint sent as the whisper initial prompt |
+
+`WHISPER_INITIAL_PROMPT` biases decoding toward household vocabulary (the
+assistant's name, people, rooms, devices), which fixes misheard proper names
+on degraded far-field audio. Use nouns/proper names only, e.g.
+`Agata (asystentka domowa), Krzysztof, salon, telewizor.` — example commands
+in the prompt get echoed back as hallucinations when the clip is mostly noise.
 
 Recommended VAD preset for Home Assistant (already in `compose.yml`):
 

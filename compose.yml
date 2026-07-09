@@ -16,13 +16,18 @@ services:
     networks:
       - bridge-network
     volumes:
-      - /opt/wyoming-transcribe/data:/root/.cache/huggingface
-      - /opt/wyoming-transcribe/speakers:/app/speakers
+      - ./data:/root/.cache/huggingface
+      - ./speakers:/app/speakers
     environment:
       # whisper.cpp server doing the actual speech-to-text.
       - WHISPERCPP_URL=${WHISPERCPP_URL:-http://whispercpp:4050}
       # Label for unenrolled speakers in transcript text (language-specific).
       - SPEAKER_LABEL=Mówca
+      # Whisper initial prompt: biases decoding toward household vocabulary.
+      # Set the real value (names, rooms, devices) in .env; see .env.example.
+      # Nouns/proper names ONLY — example commands here would be echoed back
+      # as hallucinations on noisy audio.
+      - WHISPER_INITIAL_PROMPT=${WHISPER_INITIAL_PROMPT:-}
       # Cache for the (public) ECAPA and Silero models.
       - HF_HOME=/root/.cache/huggingface
       - NVIDIA_VISIBLE_DEVICES=all

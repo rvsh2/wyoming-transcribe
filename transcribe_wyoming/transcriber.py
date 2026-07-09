@@ -43,6 +43,12 @@ CROP_PAD_SECONDS = 0.1
 # spoken language (SPEAKER_LABEL=Mówca for Polish).
 SPEAKER_LABEL = os.environ.get("SPEAKER_LABEL", "Speaker")
 
+# Optional whisper initial prompt biasing decoding toward household vocabulary
+# (assistant name, people, rooms, devices). Nouns/proper names only: example
+# commands in the prompt get echoed back as hallucinations on noisy audio
+# ("Która godzina?" transcribed from pure noise in testing).
+WHISPER_INITIAL_PROMPT = os.environ.get("WHISPER_INITIAL_PROMPT", "").strip()
+
 def segment_label(segment: dict) -> str:
     """Display label for a segment: enrolled name when known, else '<SPEAKER_LABEL> N'."""
     name = segment.get("name")
@@ -258,18 +264,24 @@ class SpeechTranscriber:
             )
         buffer.seek(0)
 
+        data = {
+            "language": language,
+            "response_format": "json",
+            "temperature": str(temperature),
+            # Beam search noticeably improves short degraded commands
+            # ("Agata." vs "Pagata." on real clips); the server-side
+            # --beam-size flag crashes at startup, per-request works.
+            "beam_size": "5",
+            # Suppress non-speech tokens ("(music)", "♪"): far-field noise
+            # otherwise occasionally transcribes as sound-effect markup.
+            "suppress_nst": "true",
+        }
+        if WHISPER_INITIAL_PROMPT:
+            data["prompt"] = WHISPER_INITIAL_PROMPT
         response = requests.post(
             self.whispercpp_url + "/inference",
             files={"file": ("audio.wav", buffer, "audio/wav")},
-            data={
-                "language": language,
-                "response_format": "json",
-                "temperature": str(temperature),
-                # Beam search noticeably improves short degraded commands
-                # ("Agata." vs "Pagata." on real clips); the server-side
-                # --beam-size flag crashes at startup, per-request works.
-                "beam_size": "5",
-            },
+            data=data,
             timeout=60,
         )
         response.raise_for_status()
